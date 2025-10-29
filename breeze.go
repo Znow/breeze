@@ -50,6 +50,19 @@ func (s *Breeze) OnTraffic(c gnet.Conn) gnet.Action {
 		}
 
 		handler, middlewares, params := s.Router.Find(req)
+
+		if handler == nil {
+			// No route found — send 404
+			c.AsyncWrite([]byte("HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\n\r\nNot Found"), nil)
+			// Consume the buffer and stop processing
+			if consumed >= len(buf) {
+				buf = nil
+			} else {
+				buf = buf[consumed:]
+			}
+			continue
+		}
+
 		ctx := &Context{
 			Conn:        c,
 			Req:         req,
