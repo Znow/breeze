@@ -40,7 +40,7 @@ func (r *Router) SetStaticDir(dir string) {
 	r.staticDir = dir
 }
 
-func (r *Router) Handle(method Method, pattern string, handler HandlerFunc) {
+func (r *Router) Handle(method Method, pattern string, handler HandlerFunc, middlewares ...HandlerFunc) {
 	if pattern == "" || pattern[0] != '/' {
 		panic("invalid route pattern: must start with '/'")
 	}
@@ -67,11 +67,18 @@ func (r *Router) Handle(method Method, pattern string, handler HandlerFunc) {
 		}
 	}
 
+	// Combine middlewares + final handler
+	finalHandler := func(ctx *Context) {
+		ctx.middlewares = append(middlewares, handler)
+		ctx.index = -1 // will start at 0 in ctx.Next
+		ctx.Next()
+	}
+
 	r.routes = append(r.routes, &route{
 		method:       method,
 		pattern:      pattern,
 		segments:     segments,
-		handler:      handler,
+		handler:      finalHandler,
 		hasWildcard:  hasWildcard,
 		wildcardName: wildcardName,
 	})

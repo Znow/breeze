@@ -38,14 +38,15 @@ func (ctx *Context) JSON(data any) {
 		Body:    d,
 	}
 }
-func (ctx *Context) HTML(data []byte) {
 
+func (ctx *Context) HTML(data []byte) {
 	ctx.Res = &HTTPResponse{
 		Status:  200,
 		Headers: map[string]string{"Content-Type": "text/html; charset=utf-8"},
 		Body:    data,
 	}
 }
+
 func (ctx *Context) Status(code int) {
 	if ctx.Res == nil {
 		ctx.Res = &HTTPResponse{Headers: make(map[string]string)}
@@ -53,11 +54,30 @@ func (ctx *Context) Status(code int) {
 	ctx.Res.Status = code
 }
 
+// --- Params helpers ---
+
 func (ctx *Context) Param(key string) string {
 	if ctx.params == nil {
 		return ""
 	}
 	return ctx.params[key]
+}
+
+// SetParam sets a single key/value pair in context params
+func (ctx *Context) SetParam(key, value string) {
+	if ctx.params == nil {
+		ctx.params = make(map[string]string)
+	}
+	ctx.params[key] = value
+}
+
+// SetParams replaces all params with the provided map
+func (ctx *Context) SetParams(p map[string]string) {
+	if p == nil {
+		ctx.params = make(map[string]string)
+	} else {
+		ctx.params = p
+	}
 }
 
 func (ctx *Context) Query(key string) string {
@@ -86,4 +106,33 @@ func (ctx *Context) Next() {
 
 func (ctx *Context) Abort() {
 	ctx.index = len(ctx.middlewares)
+}
+
+// --- New: SetHeader method for security and custom headers ---
+func (ctx *Context) SetHeader(key, value string) {
+	if ctx.Res == nil {
+		ctx.Res = &HTTPResponse{Headers: make(map[string]string)}
+	}
+	if ctx.Res.Headers == nil {
+		ctx.Res.Headers = make(map[string]string)
+	}
+	ctx.Res.Headers[key] = value
+}
+func (ctx *Context) GetParams() map[string]string {
+	if ctx.params == nil {
+		return map[string]string{}
+	}
+
+	// return a copy to prevent external modification
+	cpy := make(map[string]string, len(ctx.params))
+	for k, v := range ctx.params {
+		cpy[k] = v
+	}
+	return cpy
+}
+func (ctx *Context) GetParam(key string) string {
+	if ctx.params == nil {
+		return ""
+	}
+	return ctx.params[key]
 }
