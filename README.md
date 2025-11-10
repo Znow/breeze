@@ -1,50 +1,27 @@
 # 🌀 **Breeze** — High-Performance Golang Network Framework
 
-> **Breeze** is a blazing-fast, asynchronous network framework built on top of [`gnet`](https://github.com/panjf2000/gnet).
-> It combines the **raw speed of event-driven networking** with a **modern HTTP-style routing and context system**, offering a clean developer experience without sacrificing performance.
+[![Go Reference](https://pkg.go.dev/badge/github.com/nelthaarion/breeze.svg)](https://pkg.go.dev/github.com/nelthaarion/breeze)
+[![Go Report Card](https://goreportcard.com/badge/github.com/nelthaarion/breeze)](https://goreportcard.com/report/github.com/nelthaarion/breeze)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+**Breeze** is a **fast, lightweight, and modern Go web framework** designed for simplicity, flexibility, and high performance. Build secure, maintainable web applications with ease. 🌟
 
 ---
 
-## 🚀 Features
+## ✨ Features
 
-* ⚡ **gnet-powered event loop** — built for millions of concurrent connections
-* 🧠 **Context-based request lifecycle** — no unsafe global states
-* 📦 **Router with method/path matching** (`GET`, `POST`, etc.)
-* 🔄 **Async response writes** using `ctx.AsyncWrite()`
-* 🧾 **Built-in JSON encoder** and custom response helpers (`ctx.JSON`, `ctx.String`, `ctx.Status`)
-* 📁 **Multipart form/file upload & download** (any file type supported)
-* 🧵 **Worker pool and concurrency-safe design**
-* 🧩 **Middleware support** — easily attach pre/post request logic
-* 🧰 **Lightweight and extensible** — embed your own logic or protocol layers
-
----
-
-## 🧱 Architecture Overview
-
-```
-┌──────────────────────────────────────────┐
-│                 Breeze                   │
-│──────────────────────────────────────────│
-│   gnet EventLoop                         │
-│     ├─ Accepts TCP connections           │
-│     ├─ Dispatches data frames            │
-│     └─ Async I/O                         │
-│──────────────────────────────────────────│
-│   Context Layer (ctx)                    │
-│     ├─ Request (headers, body, params)   │
-│     ├─ Response (status, async write)    │
-│     ├─ Middleware pre/post handling      │
-│     └─ JSON / File helpers               │
-│──────────────────────────────────────────│
-│   Router                                 │
-│     ├─ Match method + path               │
-│     └─ Call handler(ctx)                 │
-└──────────────────────────────────────────┘
-```
+* 🏎️ **High-performance routing**
+* 🛡️ **Middleware support** for auth, security, compression, caching, CORS, rate limiting, etc.
+* 📦 Helpers for **JSON, HTML, string responses**
+* 🔐 **Security headers middleware** (CSP, HSTS, XSS protection)
+* 🔑 **JWT authentication & refresh token support**
+* ⏱️ **Rate limiting** & **throttling**
+* ♻️ **Panic recovery** to keep your server alive
+* 📈 Optional **ETag / in-memory caching**
 
 ---
 
-## ⚙️ Installation
+## 🚀 Installation
 
 ```bash
 go get github.com/nelthaarion/breeze
@@ -52,113 +29,124 @@ go get github.com/nelthaarion/breeze
 
 ---
 
-## 🧩 Basic Usage
+## 🏁 Quick Start
 
 ```go
 package main
 
 import (
 	"github.com/nelthaarion/breeze"
-	"runtime"
+	"github.com/nelthaarion/breeze/middleware"
 )
 
 func main() {
 	router := breeze.NewRouter()
 
-	// Global middleware
-		router.Use(func(ctx *breeze.Context) {
-		println("Incoming request:", ctx.Req.Path)
-		ctx.Next()
-	})
+	// 🌐 Global security middleware
+	router.Use(middleware.DefaultSecurityMiddleware())
 
-	router.Handle(breeze.GET, "/", func(ctx *breeze.Context) {
-		ctx.JSON(map[string]string{"message": "Welcome to Breeze!"})
-	})
+	// 🔐 Route-specific middleware: JWT authentication
+	router.Handle("GET", "/profile", profileHandler, middleware.JWTAuthMiddleware(middleware.JWTOptions{
+		AccessSecret:       "access_secret",
+		RefreshSecret:      "refresh_secret",
+		EnableRefreshToken: true,
+		RequiredRoles:      []string{"user", "admin"},
+	}))
 
-	router.Handle(breeze.POST, "/echo", func(ctx *breeze.Context) {
-		ctx.JSON(map[string]string{"echo": string(ctx.Req.Body)})
+	// 🚀 Start server
+	router.Listen(":8080")
+}
+
+func profileHandler(ctx *breeze.Context) {
+	user := ctx.GetParam("user") // claims set by JWT middleware
+	ctx.JSON(map[string]string{
+		"message": "Welcome " + user + " 🌟",
 	})
-	app := breeze.New(router, breeze.NewWorkerPool(runtime.NumCPU()))
-	app.Run(8080, router)
 }
 ```
 
 ---
 
-## 🧩 Middleware Example
+## 🧩 Middleware
+
+Middlewares in Breeze are **just `HandlerFunc`s**. They can be applied:
+
+* **Globally** with `router.Use()`
+* **Per-route** with `router.Handle()`
+
+### 🔹 Built-in Middlewares
+
+| Middleware         | Description                                                             |
+| ------------------ | ----------------------------------------------------------------------- |
+| 🛡️ Security       | Adds headers like CSP, HSTS, X-Frame-Options, XSS-Protection            |
+| 🔑 JWT Auth        | Validates access & refresh tokens, supports roles and claims validation |
+| ♻️ Recovery        | Catches panics in handlers or middleware                                |
+| ⏱️ Rate Limiting   | Limits requests per client IP                                           |
+| 🌍 CORS            | Handles cross-origin requests                                           |
+| 🗜️ Compression    | Supports gzip, deflate, brotli                                          |
+| 🏷️ ETag / Caching | Adds ETag, conditional GET, optional in-memory caching                  |
+
+---
+
+## 👨‍💻 User Use Case: Middleware Chaining
+
+Imagine a **profile endpoint** that requires:
+
+1. Authenticated user (JWT)
+2. Safe security headers
+3. Panic-safe execution
 
 ```go
-router.Use(func(ctx *breeze.Context, next breeze.HandlerFunc) {
-	start := time.Now()
-	next(ctx)
-	fmt.Println("Handled in", time.Since(start))
-})
+router.Handle("GET", "/profile", profileHandler,
+	middleware.RecoveryMiddleware(),
+	middleware.DefaultSecurityMiddleware(),
+	middleware.JWTAuthMiddleware(middleware.JWTOptions{
+		AccessSecret:  "access_secret",
+		RefreshSecret: "refresh_secret",
+		RequiredRoles: []string{"user", "admin"},
+	}),
+)
 ```
 
-Middlewares are executed in the order they are added before reaching the route handler.
+**Flow**:
 
----
+1. ♻️ `RecoveryMiddleware()` – prevents crashes
+2. 🛡️ `DefaultSecurityMiddleware()` – adds headers
+3. 🔑 `JWTAuthMiddleware()` – validates tokens, sets claims in `ctx.params`
 
-## 📁 File Upload & Download
-
-### Upload
+Inside `profileHandler`:
 
 ```go
-router.Handle(breeze.POST, "/upload", func(ctx *breeze.Context) {
-	filename, err := ctx.SaveUploadedFile("file", "./uploads/received.bin", 50<<20) // 50 MB
-	if err != nil {
-		ctx.Status(400)
-		ctx.String("Upload failed: " + err.Error())
-		return
-	}
-	ctx.JSON(map[string]string{"saved_as": filename})
-})
-```
-
-### Download
-
-```go
-router.Handle(breeze.GET, "/file/:name", func(ctx *breeze.Context) {
-	name := ctx.Param("name")
-	ctx.SendFile("./uploads/" + name)
-})
+func profileHandler(ctx *breeze.Context) {
+	user := ctx.GetParam("user") // safely access JWT claims
+	ctx.JSON(map[string]string{
+		"message": "Welcome " + user + " 🌟",
+	})
+}
 ```
 
 ---
 
-## 🧠 Context Reference
+## 💡 Tips & Tricks
 
-| Method                                       | Description                        |
-| -------------------------------------------- | ---------------------------------- |
-| `ctx.JSON(data any)`                         | Write JSON response asynchronously |
-| `ctx.String(str string)`                     | Write plain text                   |
-| `ctx.Status(code int)`                       | Set response status                |
-| `ctx.AsyncWrite(data []byte)`                | Low-level async writer             |
-| `ctx.ParseMultipart(maxSize int64)`          | Parse multipart form               |
-| `ctx.SaveUploadedFile(field, dest, maxSize)` | Save uploaded file to disk         |
-| `ctx.Param(name string)`                     | Access route param                 |
-| `ctx.Req.Body`                               | Raw request body bytes             |
-| `ctx.Req.Header`                             | Request headers map                |
+* Use **`ctx.SetParam`** & **`ctx.GetParam`** to safely store/retrieve per-request data
+* Chain multiple middlewares for **fine-grained control**
+* Combine **global and per-route middleware** for flexible security policies
+* Use **refresh tokens** to automatically renew JWT access tokens
 
 ---
 
- 
-## 🧪 Example Folder Layout
+## 🎨 Summary
 
-```
-breeze/
-├─ main.go
-├─ router.go
-├─ context.go
-├─ middleware.go
-├─ request.go
-├─ response.go
-├─ file.go
-└─ internal/
-   └─ utils.go
-```
+Breeze makes Go web development:
 
----
+* ✅ Fast
+* ✅ Secure
+* ✅ Extensible
+* ✅ Fun
+
+Build your next Go API, microservice, or web app **the Breeze way**! 🌬️
+
 
 ## 🧑‍💻 Contributing
 
