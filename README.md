@@ -1,4 +1,4 @@
-# 🌀 **Breeze** — High-Performance Golang Network Framework
+# 🌀 **Breeze** — High-Performance Golang Web Framework
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/nelthaarion/breeze.svg)](https://pkg.go.dev/github.com/nelthaarion/breeze)
 [![Go Report Card](https://goreportcard.com/badge/github.com/nelthaarion/breeze)](https://goreportcard.com/report/github.com/nelthaarion/breeze)
