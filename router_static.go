@@ -12,24 +12,39 @@ import (
 // ServeStatic registers handlers to serve files under `root` at URL prefix `prefix`.
 // Example: ServeStatic("/static", "./public") will serve ./public/* at /static/*
 func (r *Router) ServeStatic(prefix, root string) {
-	// ensure prefix has no trailing slash when registering pattern,
-	// the pattern we register will be prefix + "/*filepath"
-	cleanPrefix := strings.TrimSuffix(prefix, "/")
+	// Resolve root once at registration time so every request just does a
+	// strings.HasPrefix check — no extra syscall on the hot path.
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		panic("ServeStatic: cannot resolve root path: " + err.Error())
+	}
+	// Ensure the jail boundary always ends with a separator so that a directory
+	// named e.g. "/public-evil" cannot match a root of "/public".
+	jail := absRoot + string(os.PathSeparator)
 
-	// handler for files: pattern: prefix + "/*filepath"
+	cleanPrefix := strings.TrimSuffix(prefix, "/")
 	pattern := cleanPrefix + "/*filepath"
+
 	r.Handle(GET, pattern, func(ctx *Context) {
 		fp := ctx.Param("filepath")
-		// if client requested exactly '/static' (no trailing slash) treat as root index
 		if fp == "" || fp == "/" {
 			fp = "index.html"
 		}
-		// sanitize path to avoid directory traversal
-		fp = filepath.Clean("/" + fp)[1:] // make it relative and cleaned
 
-		full := filepath.Join(root, fp)
+		// Sanitize: clean the path and make it relative.
+		fp = filepath.Clean("/"+fp)[1:]
 
-		// open and serve file
+		full := filepath.Join(absRoot, fp)
+
+		// ── Path traversal guard ───────────────────────────────────────────
+		// filepath.Join already resolves "..", but we verify the result is
+		// still inside the jail to handle any edge cases (symlinks aside).
+		if !strings.HasPrefix(full+string(os.PathSeparator), jail) {
+			ctx.Status(403)
+			ctx.WriteString("Forbidden")
+			return
+		}
+
 		f, err := os.Open(full)
 		if err != nil {
 			ctx.Status(404)
@@ -45,10 +60,10 @@ func (r *Router) ServeStatic(prefix, root string) {
 			return
 		}
 
-		// For small/medium files: read into memory (simple)
-		// If you want streaming for big files, use ctx.StreamFile or implement chunked writes.
-		data, err := io.ReadAll(f)
-		if err != nil {
+		// Pre-size the read buffer to the exact file size to avoid
+		// io.ReadAll's internal growth loop for files whose size is known.
+		data := make([]byte, info.Size())
+		if _, err := io.ReadFull(f, data); err != nil {
 			ctx.Status(500)
 			ctx.WriteString("Error reading file")
 			return

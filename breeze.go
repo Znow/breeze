@@ -58,7 +58,14 @@ func (s *Breeze) OnTraffic(c gnet.Conn) gnet.Action {
 	for len(buf) > 0 {
 		req, consumed, err := ParseHTTPRequest(buf)
 		if err != nil {
-			c.AsyncWrite([]byte("HTTP/1.1 400 Bad Request\r\nContent-Length: 11\r\n\r\nBad Request"), nil)
+			resp := []byte("HTTP/1.1 400 Bad Request\r\nContent-Length: 11\r\n\r\nBad Request")
+			msg := err.Error()
+			if msg == "request body too large" {
+				resp = []byte("HTTP/1.1 413 Content Too Large\r\nContent-Length: 20\r\n\r\nRequest body too large")
+			} else if msg == "transfer-encoding not supported" {
+				resp = []byte("HTTP/1.1 501 Not Implemented\r\nContent-Length: 30\r\n\r\nTransfer-Encoding not supported")
+			}
+			c.AsyncWrite(resp, nil)
 			buf = nil
 			break
 		}

@@ -11,7 +11,7 @@ const (
 	PATCH  Method = "PATCH"
 	POST   Method = "POST"
 	DELETE Method = "DELETE"
-	OPTION Method = "OPTION"
+	OPTIONS Method = "OPTIONS"
 )
 
 // HTTPRequest holds parsed HTTP request data.
