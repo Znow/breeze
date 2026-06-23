@@ -116,8 +116,8 @@ func main() {
 	// DELETE /users/:id — delete user
 	router.Handle(breeze.DELETE, "/users/:id", deleteUser,
 		middleware.DocDELETE("/users/:id", swagger.RouteDoc{
-			Title:        "Delete user",
-			Tags:         []string{"Users"},
+			Title: "Delete user",
+			Tags:  []string{"Users"},
 			Input: []swagger.InputGroup{
 				{Type: swagger.InputParams, Fields: UserPathParams{}},
 			},
