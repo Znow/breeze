@@ -126,7 +126,6 @@ func main() {
 			OutputDescription: "User deleted",
 		}),
 	)
-
 	app := breeze.New(router, breeze.NewWorkerPool(runtime.NumCPU()))
 	app.Run(3000, true)
 }
