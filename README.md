@@ -563,6 +563,9 @@ Auto-serve root (`GET /`) serves `./public/index.html` without needing an explic
 ---
 
 ## Quick Start Example
+```
+go get github.com/nelthaarion/breeze
+```
 
 ```go
 package main
