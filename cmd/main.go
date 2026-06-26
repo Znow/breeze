@@ -5,6 +5,8 @@ import (
 	"runtime"
 
 	"github.com/nelthaarion/breeze"
+	middleware "github.com/nelthaarion/breeze/middlewares"
+	"github.com/nelthaarion/breeze/swagger"
 )
 
 // ─── HTTP request / response types ───────────────────────────────────────────
@@ -24,6 +26,15 @@ type UserResponse struct {
 type UserListResponse struct {
 	Users []UserResponse `json:"users"`
 	Total int            `json:"total"`
+}
+type UserPathParams struct {
+	ID string `json:"id" description:"User UUID"`
+}
+
+type UserQueryParams struct {
+	Page  int    `json:"page"  description:"Page number (default 1)"  omitempty:"true"`
+	Limit int    `json:"limit" description:"Items per page (default 20)" omitempty:"true"`
+	Sort  string `json:"sort"  description:"Sort field"                omitempty:"true"`
 }
 
 // ─── WebSocket chat handler ───────────────────────────────────────────────────
@@ -75,11 +86,77 @@ func main() {
 	})
 
 	// ── HTTP routes ───────────────────────────────────────────────────────
+	router.Use(middleware.SwaggerMiddleware(router, middleware.SwaggerOptions{
+		Title:       "Breeze Example API",
+		Version:     "1.0.0",
+		Description: "A demonstration of the Breeze swagger middleware.",
+		JSONPath:    "/swagger.json",
+		UIPath:      "/swagger",
+	}))
 
-	router.Handle(breeze.GET, "/users", listUsers)
-	router.Handle(breeze.POST, "/users", createUser)
-	router.Handle(breeze.GET, "/users/:id", getUser)
-	router.Handle(breeze.DELETE, "/users/:id", deleteUser)
+	router.Handle(breeze.GET, "/users", listUsers,
+		middleware.DocGET("/users", swagger.RouteDoc{
+			Title:       "List users",
+			Tags:        []string{"Users"},
+			Description: "Returns a paginated list of users.",
+			Input: []swagger.InputGroup{
+				{
+					Type:        swagger.InputQuery,
+					Fields:      UserQueryParams{},
+					Description: "Pagination and sorting options",
+				},
+			},
+			Output:            UserListResponse{},
+			OutputStatus:      200,
+			OutputDescription: "Paginated user list",
+		}),
+	)
+
+	// POST /users — create user
+	router.Handle(breeze.POST, "/users", createUser,
+		middleware.DocPOST("/users", swagger.RouteDoc{
+			Title: "Create user",
+			Tags:  []string{"Users"},
+			Input: []swagger.InputGroup{
+				{
+					Type:     swagger.InputBody,
+					Fields:   CreateUserRequest{},
+					Required: true,
+				},
+			},
+			Output:       UserResponse{},
+			OutputStatus: 201,
+		}),
+	)
+
+	// GET /users/:id — get single user
+	router.Handle(breeze.GET, "/users/:id", getUser,
+		middleware.DocGET("/users/:id", swagger.RouteDoc{
+			Title: "Get user by ID",
+			Tags:  []string{"Users"},
+			Input: []swagger.InputGroup{
+				{
+					Type:   swagger.InputParams,
+					Fields: UserPathParams{},
+				},
+			},
+			Output: UserResponse{},
+		}),
+	)
+
+	// DELETE /users/:id — delete user
+	router.Handle(breeze.DELETE, "/users/:id", deleteUser,
+		middleware.DocDELETE("/users/:id", swagger.RouteDoc{
+			Title: "Delete user",
+			Tags:  []string{"Users"},
+			Input: []swagger.InputGroup{
+				{Type: swagger.InputParams, Fields: UserPathParams{}},
+			},
+			Output:            struct{}{},
+			OutputStatus:      204,
+			OutputDescription: "User deleted",
+		}),
+	)
 
 	router.Handle(breeze.GET, "/ws/stats", func(ctx *breeze.Context) {
 		count := int64(0)
