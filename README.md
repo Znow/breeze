@@ -16,8 +16,8 @@
 * 🧵 **Worker pool and concurrency-safe design**
 * 🧩 **Middleware support** — easily attach pre/post request logic
 * 🧰 **Lightweight and extensible** — embed your own logic or protocol layers
-* 🔌 WebSocket support + Hub (real-time connections)
-
+* 🔌 **WebSocket support + Hub** (real-time connections)
+* 🧾 **Easy Swagger**
 ---
 
 ## 🧱 Architecture Overview
