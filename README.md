@@ -27,6 +27,10 @@ go get github.com/nelthaarion/breeze
 
 ------------------------------------------------------------------------
 
+Documentation: [https://nelthaarion.github.io/breeze] (Click Here).
+
+------------------------------------------------------------------------
+
 # ✨ Features
 
 ### 🚀 Built for Extreme Performance
