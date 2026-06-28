@@ -27,7 +27,7 @@ go get github.com/nelthaarion/breeze
 
 ------------------------------------------------------------------------
 
-Documentation: [https://nelthaarion.github.io/breeze] (Click Here).
+ [![Documentation](https://img.shields.io/badge/Documentation-Latest-blue?style=for-the-badge)](https://nelthaarion.github.io/breeze)
 
 ------------------------------------------------------------------------
 
