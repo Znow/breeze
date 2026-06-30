@@ -24,9 +24,19 @@ type Context struct {
 	index       int
 }
 
+// statusOrDefault returns the status code already set on ctx.Res, if any,
+// so that calling Status() before a body method (WriteString/JSON/HTML)
+// is not silently discarded. Falls back to def when no status was set yet.
+func (ctx *Context) statusOrDefault(def int) int {
+	if ctx.Res != nil && ctx.Res.Status != 0 {
+		return ctx.Res.Status
+	}
+	return def
+}
+
 func (ctx *Context) WriteString(s string) {
 	ctx.Res = &HTTPResponse{
-		Status:        200,
+		Status:        ctx.statusOrDefault(200),
 		Headers:       hdrsText,
 		Body:          []byte(s),
 		headersShared: true,
@@ -37,7 +47,7 @@ func (ctx *Context) JSON(data any) {
 	d, err := json.Marshal(data)
 	if err != nil {
 		ctx.Res = &HTTPResponse{
-			Status:        400,
+			Status:        ctx.statusOrDefault(400),
 			Headers:       hdrsJSON,
 			Body:          []byte(`{"message":"error parsing json"}`),
 			headersShared: true,
@@ -45,7 +55,7 @@ func (ctx *Context) JSON(data any) {
 		return
 	}
 	ctx.Res = &HTTPResponse{
-		Status:        200,
+		Status:        ctx.statusOrDefault(200),
 		Headers:       hdrsJSON,
 		Body:          d,
 		headersShared: true,
@@ -54,7 +64,7 @@ func (ctx *Context) JSON(data any) {
 
 func (ctx *Context) HTML(data []byte) {
 	ctx.Res = &HTTPResponse{
-		Status:        200,
+		Status:        ctx.statusOrDefault(200),
 		Headers:       hdrsHTML,
 		Body:          data,
 		headersShared: true,
@@ -62,9 +72,16 @@ func (ctx *Context) HTML(data []byte) {
 }
 
 // Status sets (or overrides) the response status code.
+//
+// Order-independent: Status may be called before or after the body
+// methods (JSON/WriteString/HTML). Those methods replace ctx.Res but
+// preserve any status code already set via Status, so both of these
+// work identically:
+//
+//	ctx.Status(401); ctx.WriteString("nope")
+//	ctx.WriteString("nope"); ctx.Status(401)
+//
 // For bodyless responses (204, 304) call this alone.
-// For responses with a body, call the body method first (JSON/WriteString/HTML),
-// then call Status — those methods replace ctx.Res entirely.
 func (ctx *Context) Status(code int) {
 	if ctx.Res == nil {
 		ctx.Res = &HTTPResponse{

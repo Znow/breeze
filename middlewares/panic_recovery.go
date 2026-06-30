@@ -25,7 +25,7 @@ func RecoveryMiddleware() breeze.HandlerFunc {
 				} else {
 					ctx.Status(500)
 					ctx.Res.Body = []byte("Internal Server Error")
-					ctx.Res.Headers["Content-Type"] = "text/plain"
+					ctx.SetHeader("Content-Type", "text/plain")
 				}
 
 				// Stop middleware chain

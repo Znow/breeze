@@ -41,7 +41,11 @@ func (r *HTTPResponse) Bytes() []byte {
 		statusText = statusTexts[r.Status]
 	}
 	if statusText == "" {
-		statusText = "OK"
+		if r.Status == 200 || r.Status == 0 {
+			statusText = "OK"
+		} else {
+			statusText = "Status"
+		}
 	}
 
 	// Estimate capacity: status line (~20) + headers (~40 each) + body.

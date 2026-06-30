@@ -192,6 +192,7 @@ func createUser(ctx *breeze.Context) {
 }
 
 func getUser(ctx *breeze.Context) {
+
 	ctx.JSON(UserResponse{
 		ID:    ctx.GetParam("id"),
 		Name:  "Alice",
