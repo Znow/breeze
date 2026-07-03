@@ -101,3 +101,9 @@ go get github.com/nelthaarion/breeze
 -   Optimized HTTP parser
 -   Single-pass header parsing
 -   Reduced GC pressure
+
+🤝 Contributing
+
+We welcome contributions of all sizes.
+
+Whether it's fixing bugs, improving documentation, optimizing performance, or adding new features, every contribution helps make Breeze better.
