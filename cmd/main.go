@@ -86,13 +86,13 @@ func main() {
 	})
 
 	// ── HTTP routes ───────────────────────────────────────────────────────
-	// router.Use(middleware.ScalarMiddleware(router, middleware.ScalarOptions{
-	// 	Title:       "Breeze Example API",
-	// 	Version:     "1.0.0",
-	// 	Description: "A demonstration of the Breeze Scalar middleware.",
-	// 	JSONPath:    "/openapi.json",
-	// 	UIPath:      "/scalar",
-	// }))
+	router.Use(middleware.ScalarMiddleware(router, middleware.ScalarOptions{
+		Title:       "Breeze Example API",
+		Version:     "1.0.0",
+		Description: "A demonstration of the Breeze Scalar middleware.",
+		JSONPath:    "/openapi.json",
+		UIPath:      "/scalar",
+	}))
 	router.ServeStatic("/files", "./files/")
 	router.Handle(breeze.GET, "/users", listUsers,
 		middleware.DocGET("/users", scalar.RouteDoc{
