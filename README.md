@@ -28,6 +28,7 @@ efficiently while keeping your code clean and maintainable.
 
 - [Installation](#installation)
 - [Quick Start](#quick-start)
+- [Docker](#docker)
 - [CLI — Scaffolding & Code Generation](#-cli--scaffolding--code-generation)
 - [Features](#features)
   - [Built for Extreme Performance](#-built-for-extreme-performance)
@@ -97,6 +98,28 @@ Run it:
 go run main.go
 # → curl http://localhost:3000/        → {"status":"ok"}
 # → curl http://localhost:3000/users/42 → {"id":"42"}
+```
+
+## Docker
+
+The repository ships a multi-stage `Dockerfile` and `docker-compose.yml`
+that containerize the example server in `./cmd` (~25 MB image, static
+binary, non-root user, built-in healthcheck):
+
+```bash
+# Plain Docker
+docker build -t breeze-example .
+docker run --rm -p 3000:3000 breeze-example
+
+# Or with Compose
+docker compose up --build
+```
+
+Breeze itself is a library — to containerize your own application, point
+the `BREEZE_TARGET` build argument at any main package in the module:
+
+```bash
+docker build --build-arg BREEZE_TARGET=./cmd/dashboard-example -t my-app .
 ```
 
 ## 🧰 CLI — Scaffolding & Code Generation
