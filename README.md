@@ -39,6 +39,7 @@ efficiently while keeping your code clean and maintainable.
   - [Performance Optimizations](#-performance-optimizations)
 - [Support the Project](#-support-the-project)
 - [Contributing](#-contributing)
+- [Security Scanning](#-security-scanning)
 - [License](#license)
 
 ## Installation
@@ -221,6 +222,21 @@ Breeze better.
 
 Please open an issue first for non-trivial changes so we can align on
 the approach before you spend time on code.
+
+## 🔐 Security Scanning
+
+Breeze now includes automated security checks in GitHub Actions:
+
+- **CodeQL** static analysis (`.github/workflows/codeql.yml`)
+- **govulncheck** vulnerability scanning for Go packages and reachable code (`.github/workflows/govulncheck.yml`)
+- **Gitleaks** secret scanning (`.github/workflows/secret-scan.yml`)
+- **Dependabot** weekly updates for Go modules and GitHub Actions (`.github/dependabot.yml`)
+
+For repository admins:
+
+- Enable GitHub Advanced Security **secret scanning** and **push protection** in repository settings when available.
+- Configure branch protection to require the three security workflow checks before merge.
+- Use the triage process in `.github/SECURITY_TRIAGE.md` to classify and resolve alerts.
 
 ## License
 
