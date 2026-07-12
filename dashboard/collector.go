@@ -162,6 +162,14 @@ func (c *Collector) SetDBWriter(w DBWriter) {
         c.dbWriter = w
 }
 
+// invalidateTableCache clears the cached Database Browser rows for table
+// after a successful write. It is a no-op if no inspector is configured.
+func (c *Collector) invalidateTableCache(table string) {
+        if ci, ok := c.dbInspector.(*cachedDBInspector); ok {
+                ci.Invalidate(table)
+        }
+}
+
 // Config returns the active configuration.
 func (c *Collector) Config() Config { return c.cfg }
 
