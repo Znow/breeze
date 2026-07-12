@@ -242,3 +242,81 @@ func TestHandleDBTableInsert(t *testing.T) {
 		}
 	})
 }
+
+func TestHandleDBTableUpdate(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.AllowWrites = true
+		c := newCollector(cfg, nil)
+		c.SetDBInspector(&mockInspector{})
+		c.SetDBWriter(&mockWriter{})
+
+		ctx := breeze.NewContext(breeze.PUT, "/api/db/tables/users/rows/id=1")
+		ctx.SetParam("name", "users")
+		ctx.SetParam("pk", "id=1")
+		ctx.Req.Body = []byte(`{"values":{"name":"Bob"}}`)
+
+		c.handleDBTableUpdate(ctx)
+
+		if ctx.Res.Status != 200 {
+			t.Fatalf("Status = %d, want 200; body=%s", ctx.Res.Status, ctx.Res.Body)
+		}
+	})
+
+	t.Run("row not found", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.AllowWrites = true
+		c := newCollector(cfg, nil)
+		c.SetDBInspector(&mockInspector{})
+		c.SetDBWriter(&mockWriter{updateErr: ErrRowNotFound})
+
+		ctx := breeze.NewContext(breeze.PUT, "/api/db/tables/users/rows/id=999")
+		ctx.SetParam("name", "users")
+		ctx.SetParam("pk", "id=999")
+		ctx.Req.Body = []byte(`{"values":{"name":"Bob"}}`)
+
+		c.handleDBTableUpdate(ctx)
+
+		if ctx.Res.Status != 404 {
+			t.Fatalf("Status = %d, want 404", ctx.Res.Status)
+		}
+	})
+
+	t.Run("writes disabled", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.AllowWrites = false
+		c := newCollector(cfg, nil)
+		c.SetDBInspector(&mockInspector{})
+		c.SetDBWriter(&mockWriter{})
+
+		ctx := breeze.NewContext(breeze.PUT, "/api/db/tables/users/rows/id=1")
+		ctx.SetParam("name", "users")
+		ctx.SetParam("pk", "id=1")
+		ctx.Req.Body = []byte(`{"values":{"name":"Bob"}}`)
+
+		c.handleDBTableUpdate(ctx)
+
+		if ctx.Res.Status != 403 {
+			t.Fatalf("Status = %d, want 403", ctx.Res.Status)
+		}
+	})
+
+	t.Run("writer error", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.AllowWrites = true
+		c := newCollector(cfg, nil)
+		c.SetDBInspector(&mockInspector{})
+		c.SetDBWriter(&mockWriter{updateErr: errors.New("constraint violation")})
+
+		ctx := breeze.NewContext(breeze.PUT, "/api/db/tables/users/rows/id=1")
+		ctx.SetParam("name", "users")
+		ctx.SetParam("pk", "id=1")
+		ctx.Req.Body = []byte(`{"values":{"name":"Bob"}}`)
+
+		c.handleDBTableUpdate(ctx)
+
+		if ctx.Res.Status != 400 {
+			t.Fatalf("Status = %d, want 400", ctx.Res.Status)
+		}
+	})
+}

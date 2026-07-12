@@ -2,6 +2,7 @@ package dashboard
 
 import (
         "crypto/subtle"
+        "errors"
         "fmt"
         "net/url"
         "runtime"
@@ -197,6 +198,7 @@ func (c *Collector) registerRoutes(router *breeze.Router, app *breeze.Breeze) {
                 router.Handle(breeze.GET, api+"/db/tables", c.wrap(auth, c.handleDBTables))
                 router.Handle(breeze.GET, api+"/db/tables/:name", c.wrap(auth, c.handleDBTableData))
                 router.Handle(breeze.POST, api+"/db/tables/:name/rows", c.wrap(auth, c.handleDBTableInsert))
+                router.Handle(breeze.PUT, api+"/db/tables/:name/rows/:pk", c.wrap(auth, c.handleDBTableUpdate))
 
         // ── WebSocket endpoint for real-time updates ──────────────────────────
         if app != nil {
@@ -519,6 +521,37 @@ func (c *Collector) handleDBTableInsert(ctx *breeze.Context) {
         c.RecordLog("app", LogEntry{Time: now(), Message: fmt.Sprintf("db write: insert into %s", table)})
         ctx.Status(201)
         ctx.JSON(row)
+}
+
+func (c *Collector) handleDBTableUpdate(ctx *breeze.Context) {
+        table := ctx.Param("name")
+        writer, ok := c.writableGuard(ctx, table)
+        if !ok {
+                return
+        }
+        pk := parsePK(ctx.Param("pk"))
+        var req struct {
+                Values map[string]any `json:"values"`
+        }
+        if err := jsonUnmarshal(ctx.Req.Body, &req); err != nil {
+                ctx.Status(400)
+                ctx.JSON(map[string]any{"error": "invalid request body"})
+                return
+        }
+        err := writer.UpdateRow(table, pk, req.Values)
+        if errors.Is(err, ErrRowNotFound) {
+                ctx.Status(404)
+                ctx.JSON(map[string]any{"error": "row not found"})
+                return
+        }
+        if err != nil {
+                ctx.Status(400)
+                ctx.JSON(map[string]any{"error": err.Error()})
+                return
+        }
+        c.invalidateTableCache(table)
+        c.RecordLog("app", LogEntry{Time: now(), Message: fmt.Sprintf("db write: update %s", table)})
+        ctx.JSON(map[string]any{"ok": true})
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
