@@ -120,9 +120,9 @@ func (s *UserStore) TableData(name string, page, pageSize int, search string) (d
 		return dashboard.TableData{}, fmt.Errorf("unknown table: %s", name)
 	}
 	s.mu.RLock()
-	all := make([]*User, 0, len(s.users))
+	all := make([]User, 0, len(s.users))
 	for _, u := range s.users {
-		all = append(all, u)
+		all = append(all, *u)
 	}
 	s.mu.RUnlock()
 
@@ -141,6 +141,9 @@ func (s *UserStore) TableData(name string, page, pageSize int, search string) (d
 
 	total := int64(len(all))
 	start := (page - 1) * pageSize
+	if start < 0 {
+		start = 0
+	}
 	if start > len(all) {
 		start = len(all)
 	}
