@@ -3,6 +3,8 @@ package dashboard
 import (
 	"encoding/json"
 	"errors"
+	"net/url"
+	"reflect"
 	"sync/atomic"
 	"testing"
 
@@ -378,4 +380,134 @@ func TestHandleDBTableDelete(t *testing.T) {
 			t.Fatalf("Status = %d, want 403", ctx.Res.Status)
 		}
 	})
+}
+
+// pkCapturingWriter is a DBWriter that records the pk map it was called
+// with, so TestDBWriteRoutes_ThroughRouter can assert on exactly what
+// survived the real router's path-splitting + parsePK's percent-decoding.
+type pkCapturingWriter struct {
+	lastUpdatePK map[string]any
+	lastDeletePK map[string]any
+}
+
+func (w *pkCapturingWriter) InsertRow(table string, values map[string]any) (map[string]any, error) {
+	out := map[string]any{"id": "1"}
+	for k, v := range values {
+		out[k] = v
+	}
+	return out, nil
+}
+
+func (w *pkCapturingWriter) UpdateRow(table string, pk map[string]any, values map[string]any) error {
+	w.lastUpdatePK = pk
+	return nil
+}
+
+func (w *pkCapturingWriter) DeleteRow(table string, pk map[string]any) error {
+	w.lastDeletePK = pk
+	return nil
+}
+
+// TestDBWriteRoutes_ThroughRouter is the router-level integration test
+// called for in the design spec's "Testing" section. Every other test in
+// this file calls the handleDBTable* methods directly with a hand-set
+// ctx.SetParam(...), which never exercises breeze.Router.Find — so nothing
+// else in the suite verifies that the three write routes are actually
+// registered at the right method+pattern, or that a real URL path is split
+// into segments and :pk is extracted the same way production traffic would
+// see it.
+//
+// This test builds a real *breeze.Router, installs the dashboard onto it
+// via Install (which calls registerRoutes internally, registering the
+// production POST/PUT/DELETE .../rows[...] routes), then drives each write
+// route through router.Find with a literal URL path string — mirroring
+// exactly how breeze.go's OnTraffic dispatches a resolved handler
+// (handler, middlewares, params := router.Find(req); then
+// ctx.middlewares = append(middlewares, handler); ctx.Next()).
+func TestDBWriteRoutes_ThroughRouter(t *testing.T) {
+	router := breeze.NewRouter()
+	cfg := DefaultConfig()
+	cfg.DisableAuth = true // bypass Basic Auth so the test doesn't need auth headers
+	cfg.AllowWrites = true
+
+	c := Install(nil, router, cfg)
+	c.SetDBInspector(&mockInspector{})
+	writer := &pkCapturingWriter{}
+	c.SetDBWriter(writer)
+
+	const rowsPath = "/dashboard/api/db/tables/users/rows"
+
+	invoke := func(req *breeze.HTTPRequest) *breeze.Context {
+		handler, middlewares, params := router.Find(req)
+		if handler == nil {
+			t.Fatalf("router.Find(%s %s) did not resolve to a handler", req.Method, req.Path)
+		}
+		ctx := breeze.NewContext(req.Method, req.Path)
+		ctx.Req = req
+		ctx.SetParams(params)
+		ctx.SetMiddlewareChain(middlewares, handler)
+		ctx.Next()
+		return ctx
+	}
+
+	// --- POST insert, through the real router ---
+	insertReq := &breeze.HTTPRequest{
+		Method: breeze.POST,
+		Path:   rowsPath,
+		Header: map[string]string{},
+		Body:   []byte(`{"values":{"name":"Alice"}}`),
+	}
+	ctx := invoke(insertReq)
+	if ctx.Res.Status != 201 {
+		t.Fatalf("insert: Status = %d, want 201; body=%s", ctx.Res.Status, ctx.Res.Body)
+	}
+	var inserted map[string]any
+	if err := json.Unmarshal(ctx.Res.Body, &inserted); err != nil {
+		t.Fatalf("insert: unmarshal response: %v", err)
+	}
+	if inserted["name"] != "Alice" {
+		t.Errorf("insert: response[name] = %v, want Alice", inserted["name"])
+	}
+
+	// --- PUT update, with a PK value containing ',' and '=' — characters
+	// that are meaningful to parsePK's own splitting — so the segment must
+	// travel through router.Find still percent-encoded and only get
+	// decoded by parsePK, not by the router itself.
+	pkValue := "a,b=c"
+	pkSegment := "name=" + url.QueryEscape(pkValue)
+	updatePath := rowsPath + "/" + pkSegment
+
+	// Sanity-check router.Find extracts the raw (still-encoded) segment
+	// verbatim, proving the router does not decode path segments itself.
+	if _, _, params := router.Find(&breeze.HTTPRequest{Method: breeze.PUT, Path: updatePath}); params["pk"] != pkSegment {
+		t.Fatalf("router.Find params[pk] = %q, want %q (still percent-encoded)", params["pk"], pkSegment)
+	}
+
+	updateReq := &breeze.HTTPRequest{
+		Method: breeze.PUT,
+		Path:   updatePath,
+		Header: map[string]string{},
+		Body:   []byte(`{"values":{"name":"Bob"}}`),
+	}
+	ctx = invoke(updateReq)
+	if ctx.Res.Status != 200 {
+		t.Fatalf("update: Status = %d, want 200; body=%s", ctx.Res.Status, ctx.Res.Body)
+	}
+	if want := (map[string]any{"name": pkValue}); !reflect.DeepEqual(writer.lastUpdatePK, want) {
+		t.Errorf("update: writer received pk = %#v, want %#v (pk must survive router splitting + parsePK decoding intact)", writer.lastUpdatePK, want)
+	}
+
+	// --- DELETE, same PK round-trip ---
+	deleteReq := &breeze.HTTPRequest{
+		Method: breeze.DELETE,
+		Path:   rowsPath + "/" + pkSegment,
+		Header: map[string]string{},
+	}
+	ctx = invoke(deleteReq)
+	if ctx.Res.Status != 204 {
+		t.Fatalf("delete: Status = %d, want 204; body=%s", ctx.Res.Status, ctx.Res.Body)
+	}
+	if want := (map[string]any{"name": pkValue}); !reflect.DeepEqual(writer.lastDeletePK, want) {
+		t.Errorf("delete: writer received pk = %#v, want %#v", writer.lastDeletePK, want)
+	}
 }

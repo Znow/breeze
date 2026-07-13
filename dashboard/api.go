@@ -551,7 +551,7 @@ func (c *Collector) handleDBTableUpdate(ctx *breeze.Context) {
                 return
         }
         c.invalidateTableCache(table)
-        c.RecordLog("app", LogEntry{Time: now(), Message: fmt.Sprintf("db write: update %s", table)})
+        c.RecordLog("app", LogEntry{Time: now(), Message: fmt.Sprintf("db write: update %s pk=%s", table, ctx.Param("pk"))})
         ctx.JSON(map[string]any{"ok": true})
 }
 
@@ -574,7 +574,7 @@ func (c *Collector) handleDBTableDelete(ctx *breeze.Context) {
                 return
         }
         c.invalidateTableCache(table)
-        c.RecordLog("app", LogEntry{Time: now(), Message: fmt.Sprintf("db write: delete from %s", table)})
+        c.RecordLog("app", LogEntry{Time: now(), Message: fmt.Sprintf("db write: delete from %s pk=%s", table, ctx.Param("pk"))})
         ctx.Status(204)
 }
 
