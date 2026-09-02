@@ -32,6 +32,8 @@ efficiently while keeping your code clean and maintainable.
 - [CLI — Scaffolding & Code Generation](#-cli--scaffolding--code-generation)
 - [Features](#features)
   - [Built for Extreme Performance](#-built-for-extreme-performance)
+  - [Inline Execution](#-inline-execution)
+  - [Zero-Copy Headers](#-zero-copy-headers)
   - [High-Performance Routing](#-high-performance-routing)
   - [Native WebSocket Engine](#-native-websocket-engine)
     - [Built-in OpenAPI / Scalar](#-built-in-openapi--scalar)
@@ -133,8 +135,9 @@ docker build --build-arg BREEZE_TARGET=./cmd/dashboard-example -t my-app .
 
 ## 🧰 CLI — Scaffolding & Code Generation
 
-Breeze ships a `rails`-style CLI for scaffolding projects and generating
-CRUD boilerplate.
+Breeze ships a `rails`-style CLI. It has two verbs: **`generate`** writes code
+you then edit, **`add`** wires a framework feature that already exists into your
+project.
 
 ```bash
 go install github.com/nelthaarion/breeze/cmd/breeze@latest
@@ -147,23 +150,78 @@ breeze new myapp                    # minimal REST API layout (default)
 breeze new myapp --template=views   # + views/components/template engine
 ```
 
-**Generate a full CRUD resource** — structs, handlers, an in-memory store,
-and OpenAPI docs, wired into the router automatically:
+**Generate a full CRUD resource** — request/response structs, handlers, an
+in-memory store, OpenAPI docs and request validation, wired into the router
+automatically:
 
 ```bash
 breeze generate resource User name:string email:string age:int
 ```
 
-**Generate a bare handler stub** (no structs, no docs):
+A third segment on a field becomes a `validate:"..."` tag, which the generated
+handler enforces through `binding.Bind` — a request that breaks a rule gets a
+`422` with an RFC 9457 body rather than being stored:
 
 ```bash
-breeze generate handler Session --methods=get,create
+breeze generate resource User \
+  name:string:required,min=2,max=40 \
+  role:string:required,oneof=admin editor viewer
 ```
 
-**Generate gRPC server/client scaffolding** from an interface declared in
-any `*_grpc.go` file — no naming convention on methods, just a
-`grpc_type` comment (`Unary`, `ServerSideStreaming`, `ClientSideStreaming`,
-or `Bidirectional`) above each method:
+String fields given no rules are inferred as `required` (and `required,email`
+when named like an email address); numbers and bools are left alone, since
+`required` means *non-zero* and would otherwise reject `age: 0`. Pass
+`--no-validate` to turn inference off. Rules: `required`, `email`, `min=N`,
+`max=N`, `oneof=a b c`.
+
+**The other generators:**
+
+| Command | Writes |
+|---|---|
+| `generate handler <Name>` | route group with CRUD stubs, no structs or docs |
+| `generate model <Name> field:type…` | `models/` struct plus a paired SQL migration |
+| `generate event <Name> [field:type…]` | event type with emit and subscribe helpers |
+| `generate listener <Event>` | subscriber for an existing event |
+| `generate workflow <Name> --steps=a,b,c` | workflow definition with retries and compensation |
+| `generate middleware <Name>` | `breeze.HandlerFunc` stub |
+| `generate ws <Name>` | WebSocket handler with connect/message/close hooks |
+| `generate view <Name>` | HTML view and the route that renders it |
+| `generate job <Name> [--every=1h]` | background job, registered with the dashboard |
+| `generate grpc <Name>` | gRPC server/client scaffolding (see below) |
+
+**Wire in a framework feature** — 21 of them, each idempotent, each written as a
+replaceable block in `features_generated.go`:
+
+```bash
+breeze add dashboard --allow-writes
+breeze add events --async
+breeze add video --root=./media
+breeze add --list                   # all 21, in the order they are wired
+```
+
+Middlewares are emitted in an order that matters: `recovery` outermost so it
+catches panics from everything below, `cors` before `ratelimit` so a preflight is
+never rate-limited, `etag` innermost so a cached body is never served to an
+unauthenticated caller.
+
+**And the rest:**
+
+```bash
+breeze routes                       # list generated routes without booting the app
+breeze migrate up|down [n]|status   # via the runner from `breeze add migrator`
+breeze makemigration <Name>
+breeze version
+breeze help <command>
+```
+
+`breeze migrate` shells out to `cmd/migrate` in your project, which
+`breeze add migrator --driver=postgres` writes with your SQL driver
+blank-imported. That keeps `lib/pq`, `mysql` and `sqlite3` out of breeze's own
+`go.mod` while still letting the CLI run your migrations.
+
+**gRPC** scaffolding is generated from an interface declared in any `*_grpc.go`
+file — no naming convention on methods, just a `grpc_type` comment (`Unary`,
+`ServerSideStreaming`, `ClientSideStreaming`, or `Bidirectional`) above each:
 
 ```bash
 breeze generate grpc UserService
@@ -177,24 +235,113 @@ replaces its block, so it's safe to regenerate after adding fields (pass
 its own server/client/adapter files alongside the `*_grpc.go` interface it
 was generated from, and also supports `--force` to overwrite them.
 
-Supported field types: `string`, `int`, `int64`, `float64`, `bool`, `time.Time`.
+Supported field types: `string`, `int`, `int64`, `uint`, `uint64`, `float32`,
+`float64`, `bool`, `[]string`, `time.Time`, `time.Duration`.
 
 ## Features
 
 ### 🚀 Built for Extreme Performance
 
 - ⚡ Event-driven architecture powered by `gnet`
-- 🧠 Zero-copy HTTP request parsing where possible
-- 📦 Minimal allocations via pooled `Context`, `HTTPResponse`, and route
-  parameter maps (`sync.Pool`)
+- 🏎 **Inline execution**: non-blocking handlers run directly on the `gnet`
+  event-loop goroutine — no worker-pool hop, no channel handoff, no
+  `AsyncWrite` poller wakeup (see [Inline Execution](#-inline-execution))
+- 🧠 Zero-copy HTTP request parsing, optionally all the way down to **zero
+  allocations per request** (see [Zero-Copy Headers](#-zero-copy-headers))
+- 📦 Minimal allocations via pooled `Context`, `HTTPRequest`,
+  `HTTPResponse`, wire buffers, and route parameter maps (`sync.Pool`)
 - 🔥 Optimized response serialization (precomputed status-line table,
-  preallocated buffer, no `fmt.Sprintf`)
+  append-in-place into a pooled buffer, no `fmt.Sprintf`)
+- 🗂 O(1) exact-path route lookup via per-method buckets
 - 🧵 Configurable Worker Pool backpressure (`OverflowBlock` /
   `OverflowReject` / `OverflowSpawn`)
 - 🌲 Single-allocation middleware chain construction in the router
 - 💨 Lock-free fast paths for critical operations
 - 🎯 Preallocated buffers & cached status codes
-- 📈 Worker Pool for scalable request processing
+- 🧊 Cache-line-padded pool counters (no false sharing between reactors)
+
+### 🏎 Inline Execution
+
+By default, Breeze runs handlers **directly on the `gnet` event-loop
+goroutine** that read the request, rather than passing every request through
+the worker pool.
+
+`gnet` already runs one event loop per core and pins each connection to one,
+so the parallelism is there before the pool is involved. Funnelling every
+request through a single channel re-serialises that work and adds two
+goroutine handoffs plus a poller wakeup to each request. Removing the hop is
+the single largest throughput win in the framework.
+
+**This puts a requirement on your handlers.** A handler on the inline path
+must not block, because the event-loop goroutine it occupies is also serving
+every other connection pinned to that reactor. Anything that waits — a SQL
+query, a file read, an outbound HTTP call, a lock held under I/O — stalls all
+of them for its duration.
+
+Register those with **`HandleBlocking`**, which routes the request through the
+worker pool exactly as before:
+
+```go
+// In-memory, returns immediately → inline (fastest path).
+router.Handle(breeze.GET, "/users/:id", getUser)
+
+// Touches a database, the disk, or the network → worker pool.
+router.HandleBlocking(breeze.POST, "/orders", createOrder)
+```
+
+The framework's own I/O-bound routes already do this: static files, video
+streaming, template rendering, the dashboard, the OpenAPI/Scalar endpoints,
+the OAuth2 flow, and the WebSocket upgrade are all registered as blocking.
+
+To opt out globally and send every route through the pool — the pre-inline
+behaviour — call:
+
+```go
+app.SetInlineExecution(false)
+```
+
+### 🧠 Zero-Copy Headers
+
+Answering a request on the inline path allocates exactly once: the parser copies
+the request's header block into memory the request owns, and points `Path` and
+every header key and value at that copy. `SetZeroCopyHeaders(true)` removes that
+copy too, so a request is parsed, routed, handled and answered **without a
+single heap allocation by the framework**:
+
+```go
+app.SetZeroCopyHeaders(true)
+```
+
+A few hundred bytes per request does not sound like much. At high request rates
+it is a continuous stream of short-lived garbage, and the mark work for it comes
+back as GC assist on the very event-loop goroutines that are supposed to be
+serving connections. Removing the allocation removes the assist.
+
+**The trade-off is lifetime.** With this on, every string on `ctx.Req` — `Path`
+included — is a view into the connection's read buffer, which is reused for the
+next read. Inside your handler they are always valid; Breeze re-parses a request
+into owned memory before it is ever handed to a worker goroutine. What is not
+safe is keeping one *after* the handler returns:
+
+```go
+app.Handle(breeze.GET, "/x", func(c *breeze.Context) {
+    seen[c.Req.Path] = true                  // ✗ mutates into a later request
+    seen[strings.Clone(c.Req.Path)] = true   // ✓
+})
+```
+
+The failure mode is not a crash. The bytes stay mapped and readable, so a stored
+string silently turns into a fragment of some later request — and as a map key it
+lands in the wrong bucket and corrupts every lookup after it. The rule for
+anything that outlives the handler, including a package-level cache or a value
+sent to another goroutine, is `strings.Clone`.
+
+Breeze's own middlewares hold to that rule, so the dashboard, the ETag cache, and
+the rest are safe with this enabled. Third-party middleware written against the
+default contract may not be — which is why the flag is **off by default**. Turn
+it on for a service whose handlers read the request, write a response and keep
+nothing, which is most of them and is where the throughput is won. Leave it off
+if you cannot audit what your handlers and middlewares retain.
 
 ### 🌐 High-Performance Routing
 
@@ -324,7 +471,10 @@ expensive to find — the scrubber is simply dead, because the browser cannot
 ask for the middle of a file it is being handed sequentially.
 
 - 🎯 `206 Partial Content` with correct `Content-Range`; `416` for
-  unsatisfiable ranges, `200` for malformed ones (as RFC 9110 requires)
+  well-formed but unsatisfiable ranges; a malformed one is ignored (as RFC 9110
+  requires) and answered like a request with no `Range` at all — the first
+  chunk, still `206`, so the player learns the full size and can seek. `200`
+  appears only for an empty file
 - 🧠 One pooled chunk in flight per response — 256 KiB by default, so ten
   thousand viewers cost ten thousand chunks, not ten thousand copies
 - 🚧 Open-ended `Range: bytes=0-` capped at `MaxChunkSize` (4 MiB), so a
@@ -436,14 +586,22 @@ See [`dashboard/README.md`](./dashboard/README.md) for full documentation.
 
 ### 🧠 Performance Optimizations
 
+- Inline handler execution on the event loop (no dispatch hop)
 - Zero-copy body handling
+- No per-event copy of the request bytes
+- In-place header-key lowercasing (no allocation per header)
+- Optional zero-copy headers — zero framework allocations per request
+- WebSocket lookup gated on a counter, so HTTP requests never probe the map
 - Header reuse
 - Copy-on-write headers
-- Cached HTTP status text
+- Cached HTTP status text and full status lines
 - Unsafe string conversions
 - Compact receive buffers
 - Optimized HTTP parser
 - Single-pass header parsing
+- Pooled requests, responses, params, and wire buffers
+- Exact-path route map per HTTP method
+- Cache-line padding on hot atomic counters
 - Reduced GC pressure
 
 ---
