@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nelthaarion/breeze/events"
-	"github.com/nelthaarion/breeze/video"
+	"github.com/nelthaarion/breeze/v2/events"
+	"github.com/nelthaarion/breeze/v2/video"
 )
 
 // TestVideoLiveNilSafe pins the guarantee that makes the tracker free when
@@ -175,7 +175,6 @@ func TestAttachVideoEndToEnd(t *testing.T) {
 
 	bus := events.New()
 	detach := c.AttachVideo(bus)
-
 
 	if !c.VideoAttached() {
 		t.Fatal("VideoAttached false after AttachVideo")

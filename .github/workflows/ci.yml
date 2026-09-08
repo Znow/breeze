@@ -32,11 +32,27 @@ jobs:
       - name: Go vet
         run: go vet ./...
 
-      - name: Run optional golangci-lint
-        if: ${{ hashFiles('.golangci.yml', '.golangci.yaml', '.golangci.toml', '.golangci.json') != '' }}
-        uses: golangci/golangci-lint-action@v9
-        with:
-          version: latest
+
+      - name: Build the nested Kafka backend module
+        # fleet/transport/eventtransport/backends/kafka carries its own go.mod
+        # so kafka-go stays out of the framework's dependency graph. The cost is
+        # that ./... does not reach it, so nothing compiled it for months. This
+        # step is the only thing that does.
+        working-directory: fleet/transport/eventtransport/backends/kafka
+        run: |
+          go build ./...
+          go vet ./...
 
       - name: Run tests
-        run: go test ./...
+        # -short is deliberate. internal/mcp's live provisioning tests and
+        # internal/generator's e2e tests build container images and compile
+        # scaffolded projects; both skip under -short, and both take minutes.
+        # They are developer tests against a real Docker daemon, not a gate —
+        # tools_provision_live_test.go says so at the top of the file.
+        run: go test -short ./...
+
+      - name: Check internal documentation links
+        # Every relative Markdown link in the repo must resolve. Fenced code
+        # blocks are skipped: Go generics in examples (Inspect[T](bus)) are
+        # indistinguishable from Markdown links to a regex.
+        run: go run ./internal/tools/linkcheck .

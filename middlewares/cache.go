@@ -3,9 +3,10 @@ package middleware
 import (
 	"crypto/md5"
 	"encoding/hex"
+	"strings"
 	"sync"
 
-	"github.com/nelthaarion/breeze"
+	"github.com/nelthaarion/breeze/v2"
 )
 
 // ETagCache stores cached responses per route or URL.
@@ -45,9 +46,13 @@ type cachedResponse struct {
 
 // NewETagCache creates a new ETag cache.
 func NewETagCache() *ETagCache {
-	return &ETagCache{
+	c := &ETagCache{
 		store: make(map[string]*cachedResponse),
 	}
+	// Recorded so the probe can report this instance's store size. The most
+	// recently constructed cache wins, matching the registry's rule everywhere.
+	etagCacheHandle.Store(c)
+	return c
 }
 
 // ETagMiddleware returns a Breeze middleware that sets ETag headers
@@ -58,7 +63,8 @@ func NewETagCache() *ETagCache {
 // produces a different body, the ETag changes and the client gets a
 // full 200 response.
 func (c *ETagCache) ETagMiddleware() breeze.HandlerFunc {
-	return func(ctx *breeze.Context) {
+	etagInstalled.Store(true)
+	return func(ctx *breeze.Context) error {
 		// Pre-check: if the client sent If-None-Match, see if we have a
 		// stored ETag for this URL. If it matches, we can skip the handler
 		// entirely and return 304 immediately.
@@ -72,15 +78,21 @@ func (c *ETagCache) ETagMiddleware() breeze.HandlerFunc {
 				ctx.Status(304)
 				ctx.SetHeader("ETag", inm)
 				ctx.Res.Body = nil
-				return // skip handler — client's cache is still valid
+				// A 304 served without running the handler at all — the best
+				// outcome this middleware has, and the one its hit rate means.
+				etagCounter.Hit()
+				return nil // skip handler — client's cache is still valid
 			}
 		}
 
-		// Run the handler to produce the response.
-		ctx.Next()
+		// Run the handler to produce the response. A failure short-circuits: an
+		// ETag over an error body would let a client cache the failure.
+		if err := ctx.Next(); err != nil {
+			return err
+		}
 
 		if ctx.Res == nil || len(ctx.Res.Body) == 0 {
-			return
+			return nil
 		}
 
 		// Compute ETag from the fresh response body.
@@ -104,18 +116,33 @@ func (c *ETagCache) ETagMiddleware() breeze.HandlerFunc {
 		if inm != "" && inm == etag {
 			ctx.Status(304)
 			ctx.Res.Body = nil
+			// Counted as a hit even though the handler ran: the body did not go
+			// on the wire, which is the bandwidth this middleware saves.
+			etagCounter.Hit()
+		} else {
+			etagCounter.Miss()
 		}
+
+		return nil
 	}
 }
 
 // buildCacheKey constructs a cache key from the path and query string.
-// When there is no query string, the key is just the path — no allocation
-// beyond the path string itself (which is already a GC-managed view into
-// req.owned).
+//
+// The path is cloned rather than used directly. ctx.Req.Path is a view into the
+// bytes the request was parsed from, and with breeze's SetZeroCopyHeaders those
+// bytes are the connection's read buffer, which is reused for the next read.
+// The key here goes into c.store, which outlives the request — so a borrowed
+// string would not merely go stale, it would mutate into part of some later
+// request while sitting in the map as a key, putting it in the wrong bucket and
+// corrupting every lookup that follows.
+//
+// One small allocation per cached response, on a path that already hashes the
+// body with MD5 and hex-encodes the digest, is not worth optimising away.
 func buildCacheKey(ctx *breeze.Context) string {
-	if ctx.Req.Query == nil || len(ctx.Req.Query) == 0 {
-		return ctx.Req.Path
+	if len(ctx.Req.Query) == 0 {
+		return strings.Clone(ctx.Req.Path)
 	}
-	// Only allocate the concatenation when a query string exists.
+	// Concatenation already copies, so no Clone needed on this branch.
 	return ctx.Req.Path + "?" + ctx.Req.Query.Encode()
 }

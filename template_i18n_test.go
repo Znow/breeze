@@ -55,7 +55,7 @@ func renderForLocale(t *testing.T, te *TemplateEngine, locale string) string {
 	if locale != "" {
 		ctx.SetLocale(locale)
 	}
-	te.RenderView(ctx, "home", map[string]any{"Name": "Alice"})
+	_ = te.RenderView(ctx, "home", map[string]any{"Name": "Alice"})
 	if ctx.Res == nil {
 		t.Fatal("no response written")
 	}
@@ -149,7 +149,7 @@ func TestTemplateI18n_EngineWithoutI18n(t *testing.T) {
 	})
 
 	ctx := NewContext(GET, "/")
-	te.RenderView(ctx, "plain", nil)
+	_ = te.RenderView(ctx, "plain", nil)
 	if ctx.Res == nil || ctx.Res.Status != 200 {
 		t.Fatalf("render failed: %+v", ctx.Res)
 	}

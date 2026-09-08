@@ -1,6 +1,6 @@
 # oauth2
 
-Zero-config, secure OAuth2 / OpenID Connect login for [Breeze](https://github.com/nelthaarion/breeze).
+Zero-config, secure OAuth2 / OpenID Connect login for [Breeze](https:// github.com/nelthaarion/breeze/v2).
 
 Four providers work out of the box — **Google, GitHub, Microsoft, Discord** — with
 PKCE, CSRF-protected state, signed HttpOnly cookies (or JWT sessions), and
@@ -13,8 +13,8 @@ whatever you like. That's it.
 package main
 
 import (
-	"github.com/nelthaarion/breeze"
-	"github.com/nelthaarion/breeze/middlewares/oauth2"
+	"github.com/nelthaarion/breeze/v2"
+	"github.com/nelthaarion/breeze/v2/middlewares/oauth2"
 )
 
 func main() {
@@ -43,9 +43,9 @@ func main() {
 	app.Listen(":3000")
 }
 
-func dashboard(ctx *breeze.Context) {
+func dashboard(ctx *breeze.Context) error {
 	user := oauth2.CurrentUser(ctx) // *oauth2.User
-	ctx.JSON(user)
+	return ctx.JSON(user)
 }
 ```
 

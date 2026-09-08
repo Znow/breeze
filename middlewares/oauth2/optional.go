@@ -1,6 +1,6 @@
 package oauth2
 
-import "github.com/nelthaarion/breeze"
+import "github.com/nelthaarion/breeze/v2"
 
 // Optional returns a middleware that attaches the session when present but never
 // blocks the request. Handlers can branch on oauth2.CurrentUser(ctx) != nil to
@@ -8,13 +8,14 @@ import "github.com/nelthaarion/breeze"
 //
 //	app.Router.Handle(breeze.GET, "/", HomeHandler, oauth2.Optional(cfg))
 func Optional(cfg Config) breeze.HandlerFunc {
-	c := prepareConfig(cfg)
+	c, counts := prepareConfig(cfg)
 
-	return func(ctx *breeze.Context) {
+	return func(ctx *breeze.Context) error {
 		if s, err := readSession(ctx, c); err == nil {
+			counts.sessionsRead.Add(1)
 			setContext(ctx, s)
 		}
 		// Always continue, authenticated or not.
-		ctx.Next()
+		return ctx.Next()
 	}
 }

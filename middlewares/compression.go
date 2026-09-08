@@ -8,7 +8,8 @@ import (
 	"sync"
 
 	"github.com/andybalholm/brotli"
-	"github.com/nelthaarion/breeze"
+	"github.com/nelthaarion/breeze/v2"
+	"github.com/nelthaarion/breeze/v2/diag"
 )
 
 // CompressionMiddleware compresses responses using supported algorithms.
@@ -36,27 +37,36 @@ import (
 // acquired from the pool, Reset with the output buffer, used, and returned.
 // The bytes.Buffer is also pooled to avoid its internal []byte allocation.
 func CompressionMiddleware() breeze.HandlerFunc {
-	return func(ctx *breeze.Context) {
-		// Run the handler first — we need its response to compress.
-		ctx.Next()
+	compressionInstalled.Store(true)
+	return func(ctx *breeze.Context) error {
+		// Run the handler first — we need its response to compress. A failure is
+		// returned straight away: the error path writes its own body, and compressing
+		// a response that does not exist yet is not a thing to attempt.
+		if err := ctx.Next(); err != nil {
+			return err
+		}
 
 		// Nothing to compress.
 		if ctx.Res == nil || len(ctx.Res.Body) == 0 {
-			return
+			return nil
 		}
 
 		accept := ctx.Req.Header["accept-encoding"]
 		if accept == "" {
-			return
+			compressionCounter.Miss()
+			return nil
 		}
 
 		// Don't double-compress if another layer already encoded the body.
 		if ctx.GetHeader("Content-Encoding") != "" {
-			return
+			compressionCounter.Miss()
+			return nil
 		}
 
 		var encoding string
 		var compressed []byte
+
+		original := len(ctx.Res.Body)
 
 		switch {
 		case strings.Contains(accept, "br"):
@@ -67,18 +77,38 @@ func CompressionMiddleware() breeze.HandlerFunc {
 			compressed, encoding = compressDeflate(ctx.Res.Body)
 		default:
 			// No supported encoding — serve the raw response.
-			return
+			compressionCounter.Miss()
+			return nil
 		}
 
 		// Only swap the body if compression actually produced output.
 		if encoding == "" {
-			return
+			compressionCounter.Miss()
+			return nil
 		}
 
 		ctx.Res.Body = compressed
 		ctx.SetHeader("Content-Encoding", encoding)
 		// Vary header tells caches that the response differs by Accept-Encoding.
 		ctx.SetHeader("Vary", "Accept-Encoding")
+
+		// One gate read for the hit, the bytes and the saving together; see
+		// diag.Counter.HitBytes. The per-algorithm counter is incremented inside
+		// the same gated call rather than unconditionally, so a process with
+		// counting off does not touch it either.
+		if diag.CountersEnabled() {
+			compressionCounter.HitBytes(int64(len(compressed)), int64(original-len(compressed)))
+			switch encoding {
+			case "br":
+				brotliCount.Add(1)
+			case "gzip":
+				gzipCount.Add(1)
+			case "deflate":
+				deflateCount.Add(1)
+			}
+		}
+
+		return nil
 	}
 }
 
@@ -109,7 +139,7 @@ var flatePool = sync.Pool{
 		if err != nil {
 			// flate.NewWriter only errors on invalid level; DefaultCompression
 			// is always valid. This should never happen.
-		panic("middleware: flate.NewWriter(DefaultCompression) failed: " + err.Error())
+			panic("middleware: flate.NewWriter(DefaultCompression) failed: " + err.Error())
 		}
 		return w
 	},

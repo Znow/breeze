@@ -1,8 +1,8 @@
 package dashboard
 
 import (
-	"github.com/nelthaarion/breeze"
-	"github.com/nelthaarion/breeze/events"
+	"github.com/nelthaarion/breeze/v2"
+	"github.com/nelthaarion/breeze/v2/events"
 )
 
 // AttachVideo starts tracking video streaming published on bus and returns
@@ -77,9 +77,9 @@ func (c *Collector) videoTracker() *videoLive {
 // A dashboard with no video attached returns an empty snapshot with
 // attached:false rather than 404, so the page renders its empty state
 // instead of showing a failed request in the browser console.
-func (c *Collector) handleVideo(ctx *breeze.Context) {
+func (c *Collector) handleVideo(ctx *breeze.Context) error {
 	snap := c.videoTracker().Snapshot()
-	ctx.JSON(map[string]any{
+	return ctx.JSON(map[string]any{
 		"attached":            c.VideoAttached(),
 		"files":               snap.Files,
 		"total_bytes_per_sec": snap.TotalBytesPerSec,

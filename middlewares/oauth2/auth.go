@@ -1,6 +1,6 @@
 package oauth2
 
-import "github.com/nelthaarion/breeze"
+import "github.com/nelthaarion/breeze/v2"
 
 // Auth returns a middleware that requires a valid session. On success it
 // populates the context (CurrentUser/CurrentToken) and calls the next handler.
@@ -12,15 +12,17 @@ import "github.com/nelthaarion/breeze"
 //	    oauth2.Auth(cfg), // as a route middleware
 //	)
 func Auth(cfg Config) breeze.HandlerFunc {
-	c := prepareConfig(cfg)
+	c, counts := prepareConfig(cfg)
 
-	return func(ctx *breeze.Context) {
+	return func(ctx *breeze.Context) error {
 		s, err := readSession(ctx, c)
 		if err != nil {
+			counts.sessionsRejected.Add(1)
 			fail(ctx, c, 401, ErrNoSession)
-			return
+			return nil
 		}
+		counts.sessionsRead.Add(1)
 		setContext(ctx, s)
-		ctx.Next()
+		return ctx.Next()
 	}
 }

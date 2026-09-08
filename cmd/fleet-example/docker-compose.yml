@@ -1,0 +1,144 @@
+# Breeze Fleet Tracing — three services, an aggregator, and per-service MCP.
+#
+#   # 1. cross-compile the working tree (nothing is compiled inside the images)
+#   powershell -File cmd/fleet-example/build.ps1     # or: pwsh -File ...
+#
+#   # 2. run
+#   docker compose -f cmd/fleet-example/docker-compose.yml up
+#   curl http://localhost:3000/api/orders/123
+#
+# Then open http://localhost:3000/dashboard (admin/admin) and pick Fleet View.
+#
+# Request path:  client → gateway :3000 → auth :3001 → orders :3002
+# Reporting:     every service → aggregator :9000 (spans and heartbeats)
+# Introspection: gateway :2100 (MCP, app-runtime, read-only)
+#
+# The images are runtime-only and contain a binary built on the host — see
+# Dockerfile.prebuilt for why. `docker compose build` will not recompile Go code;
+# re-run the build script instead.
+#
+# Each service overrides the image's own probe. Every probe targets /healthz — a
+# route each service defines and deliberately excludes from tracing, so probe
+# traffic never appears in the trace list.
+#
+# All trace state is in memory. Stopping the aggregator discards it.
+
+services:
+  aggregator:
+    build:
+      context: ../..
+      dockerfile: cmd/fleet-example/Dockerfile.prebuilt
+      args:
+        BREEZE_BINARY: aggregator
+    environment:
+      FLEET_USERNAME: admin
+      FLEET_PASSWORD: admin
+      # Write credential for span/heartbeat ingestion, distinct from the
+      # Basic Auth above that humans use to read (§11.1).
+      FLEET_INGEST_TOKEN: fleet-demo-token
+    ports: ["9000:9000"]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9000/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  orders:
+    build:
+      context: ../..
+      dockerfile: cmd/fleet-example/Dockerfile.prebuilt
+      args:
+        BREEZE_BINARY: orders
+    environment: &fleet-env
+      FLEET_WRITE_URL: http://aggregator:9000/fleet
+      FLEET_INGEST_TOKEN: fleet-demo-token
+      # Shared secret that lets the aggregator fetch this service's own logs
+      # when stitching a trace's merged log panel (§9C.2).
+      FLEET_SERVICE_TOKEN: fleet-demo-service-token
+      # Must be resolvable *from the aggregator*, which is why it is this
+      # service's Compose DNS name and not localhost.
+      ORDERS_OPENAPI_URL: http://orders:3002/openapi.json
+    ports: ["3002:3002"]
+    depends_on:
+      aggregator:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3002/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  auth:
+    build:
+      context: ../..
+      dockerfile: cmd/fleet-example/Dockerfile.prebuilt
+      args:
+        BREEZE_BINARY: auth
+    environment:
+      <<: *fleet-env
+      ORDERS_URL: http://orders:3002
+    ports: ["3001:3001"]
+    # Gated on orders being healthy, not merely started: the first request
+    # otherwise races container startup and produces a broken-looking trace as
+    # the example's very first impression.
+    depends_on:
+      aggregator:
+        condition: service_healthy
+      orders:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3001/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  gateway:
+    build:
+      context: ../..
+      dockerfile: cmd/fleet-example/Dockerfile.prebuilt
+      args:
+        BREEZE_BINARY: gateway
+    environment:
+      <<: *fleet-env
+      # Write path for its own spans; read path for the dashboard's Fleet View
+      # proxy. Same aggregator, opposite directions.
+      FLEET_READ_URL: http://aggregator:9000/fleet
+      AUTH_URL: http://auth:3001
+
+      # ── the in-process MCP control plane ────────────────────────────────────
+      #
+      # A second port on this same process, serving read-only introspection of
+      # the running gateway. It is NOT the application port, and it is NOT
+      # Auto-MCP: it publishes framework introspection (live routes, recent
+      # errors, logs, performance) rather than this service's business routes.
+      #
+      # The server runs in app-runtime mode unconditionally, so the generating
+      # and provisioning tools are not registered at all — there is no source
+      # tree in this container for them to operate on, and nothing to reach even
+      # with a valid token.
+      BREEZE_MCP_PORT: 2100
+      BREEZE_MCP_TOKEN: fleet-demo-mcp-token
+      # Per-token scoping, the second layer. Mode decided what this server
+      # offers; this decides what the credential reaches. `runtime` is what an
+      # agent inspecting this instance needs; `fleet` would additionally let it
+      # read the aggregator, which it can already reach directly. Remove this
+      # line for an unscoped token — the endpoint reports which it issued at
+      # GET /mcp/features and in the MCP handshake.
+      BREEZE_MCP_SCOPE: runtime
+    ports:
+      - "3000:3000"
+      - "2100:2100"
+    depends_on:
+      aggregator:
+        condition: service_healthy
+      auth:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s

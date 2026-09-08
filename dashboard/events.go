@@ -4,9 +4,9 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/nelthaarion/breeze"
-	"github.com/nelthaarion/breeze/events"
-	"github.com/nelthaarion/breeze/observability"
+	"github.com/nelthaarion/breeze/v2"
+	"github.com/nelthaarion/breeze/v2/events"
+	"github.com/nelthaarion/breeze/v2/observability"
 )
 
 // This file is the dashboard's bridge to the observability layer.
@@ -131,7 +131,7 @@ func (c *Collector) forwardEventSignals(col *observability.Collector) func() {
 					return
 				}
 				if c.hub != nil {
-					c.hub.pushEvent("event", eventRowFrom(sig))
+					pushEvent(c.hub, "event", eventRowFrom(sig))
 				}
 			}
 		}
@@ -335,16 +335,15 @@ type eventTotals struct {
 // An unattached dashboard returns Attached:false with empty collections
 // rather than an error, so the page can render a clear explanation
 // instead of a failed request.
-func (c *Collector) handleEvents(ctx *breeze.Context) {
+func (c *Collector) handleEvents(ctx *breeze.Context) error {
 	col := c.eventsCollector()
 	if col == nil {
-		ctx.JSON(eventsPayload{
+		return ctx.JSON(eventsPayload{
 			Attached: false,
 			Recent:   []eventRow{},
 			Metrics:  []eventMetric{},
 			Graph:    []observability.GraphNode{},
 		})
-		return
 	}
 
 	limit := 200
@@ -404,7 +403,7 @@ func (c *Collector) handleEvents(ctx *breeze.Context) {
 		graph = []observability.GraphNode{}
 	}
 
-	ctx.JSON(eventsPayload{
+	return ctx.JSON(eventsPayload{
 		Attached: true,
 		Recent:   rows,
 		Metrics:  mrows,

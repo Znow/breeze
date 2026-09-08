@@ -1,7 +1,6 @@
 package dashboard
 
 import (
-	"os"
 	"runtime"
 	"time"
 )
@@ -127,7 +126,7 @@ func (s *metricsSampler) sample(now time.Time) {
 
 		// HTTP
 		RequestsTotal:  curReqs,
-		RequestsToday:  s.c.requestsToday.Load(),
+		RequestsToday:  s.c.TodayCount(),
 		RequestsPerSec: rps,
 		AvgRespTimeMS:  avgRespMS,
 		ErrorRate:      errRate,
@@ -194,6 +193,3 @@ func (s *metricsSampler) sample(now time.Time) {
 func cpuTimes() (time.Duration, time.Duration) {
 	return cpuUsage()
 }
-
-// pid is cached so we don't re-read on every sample.
-var procPid = os.Getpid()

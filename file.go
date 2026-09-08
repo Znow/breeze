@@ -72,11 +72,11 @@ func (req *HTTPRequest) ParseMultipart(maxFileSize int64) (map[string][]*Uploade
 			// read field value (bounded to avoid extreme memory)
 			val, readErr := io.ReadAll(part)
 			if readErr != nil {
-				part.Close()
+				_ = part.Close()
 				return nil, nil, fmt.Errorf("read form field %s: %w", formName, readErr)
 			}
 			fields[formName] = append(fields[formName], string(val))
-			part.Close()
+			_ = part.Close()
 			continue
 		}
 
@@ -87,7 +87,7 @@ func (req *HTTPRequest) ParseMultipart(maxFileSize int64) (map[string][]*Uploade
 		}
 
 		data, readErr := io.ReadAll(lr)
-		part.Close()
+		_ = part.Close()
 		if readErr != nil {
 			return nil, nil, fmt.Errorf("read file %s: %w", filename, readErr)
 		}

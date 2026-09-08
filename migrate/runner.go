@@ -28,11 +28,13 @@ type Runner struct {
 
 // New creates a new Runner for the given database and migration filesystem.
 func New(db *sql.DB, fsys fs.FS) *Runner {
-	return &Runner{
+	r := &Runner{
 		DB: db,
 		FS: fsys,
 		Mu: make(chan struct{}, 1),
 	}
+	r.registerDiagnostics()
+	return r
 }
 
 // StatusEntry represents the status of a single migration.
@@ -47,13 +49,20 @@ type StatusEntry struct {
 // Up discovers and applies all pending migrations in ascending version order.
 // Each migration is applied within its own transaction; if any migration fails,
 // Up stops and returns the error (subsequent migrations are not attempted).
-// Up uses a simple row-level lock (version -1) to prevent concurrent runs.
-func (r *Runner) Up(ctx context.Context) error {
+// Up uses a simple row-level lock (see lockVersion) to prevent concurrent runs.
+func (r *Runner) Up(ctx context.Context) (err error) {
+	// A named return, so the deferred record sees whatever any return statement
+	// assigned — including the ones inside the loop, where err is shadowed by the
+	// short declaration but the return value is not.
+	start := time.Now()
+	applied := 0
+	defer func() { record("up", start, applied, err) }()
+
 	// Acquire advisory lock using a sentinel row
 	if err := r.acquireLock(ctx); err != nil {
 		return err
 	}
-	defer r.releaseLock(ctx)
+	defer func() { _ = r.releaseLock(ctx) }()
 
 	if err := ensureVersionTable(ctx, r.DB); err != nil {
 		return fmt.Errorf("failed to initialize migrations table: %w", err)
@@ -64,14 +73,14 @@ func (r *Runner) Up(ctx context.Context) error {
 		return err
 	}
 
-	applied, err := appliedVersions(ctx, r.DB)
+	appliedVers, err := appliedVersions(ctx, r.DB)
 	if err != nil {
 		return err
 	}
 
 	pending := make([]Migration, 0, len(migrations))
 	for _, m := range migrations {
-		if _, ok := applied[m.Version]; !ok {
+		if _, ok := appliedVers[m.Version]; !ok {
 			pending = append(pending, m)
 		}
 	}
@@ -93,19 +102,20 @@ func (r *Runner) Up(ctx context.Context) error {
 				continue
 			}
 			if _, err := tx.ExecContext(ctx, stmt); err != nil {
-				tx.Rollback()
+				_ = tx.Rollback()
 				return fmt.Errorf("migration %d failed: %w", m.Version, err)
 			}
 		}
 
 		if err := recordApplied(ctx, tx, m.Version, m.Name, m.UpSQL); err != nil {
-			tx.Rollback()
+			_ = tx.Rollback()
 			return err
 		}
 
 		if err := tx.Commit(); err != nil {
 			return fmt.Errorf("failed to commit migration %d: %w", m.Version, err)
 		}
+		applied++
 	}
 
 	return nil
@@ -113,7 +123,11 @@ func (r *Runner) Up(ctx context.Context) error {
 
 // Down rolls back the last n applied migrations in descending version order.
 // Each rollback is applied within its own transaction.
-func (r *Runner) Down(ctx context.Context, n int) error {
+func (r *Runner) Down(ctx context.Context, n int) (err error) {
+	start := time.Now()
+	count := 0
+	defer func() { record("down", start, count, err) }()
+
 	if n <= 0 {
 		return fmt.Errorf("n must be positive")
 	}
@@ -122,7 +136,7 @@ func (r *Runner) Down(ctx context.Context, n int) error {
 	if err := r.acquireLock(ctx); err != nil {
 		return err
 	}
-	defer r.releaseLock(ctx)
+	defer func() { _ = r.releaseLock(ctx) }()
 
 	if err := ensureVersionTable(ctx, r.DB); err != nil {
 		return fmt.Errorf("failed to initialize migrations table: %w", err)
@@ -144,22 +158,10 @@ func (r *Runner) Down(ctx context.Context, n int) error {
 		migrationMap[m.Version] = m
 	}
 
-	// Collect applied migrations in descending order
-	appliedList := make([]appliedRecord, 0, len(applied))
-	for _, rec := range applied {
-		appliedList = append(appliedList, rec)
-	}
-	// Sort descending by version
-	for i := len(appliedList) - 1; i >= 0; i-- {
-		for j := i - 1; j >= 0; j-- {
-			if appliedList[j].Version > appliedList[i].Version {
-				appliedList[i], appliedList[j] = appliedList[j], appliedList[i]
-			}
-		}
-	}
+	// Roll back newest first, so `down 1` undoes the most recent migration.
+	appliedList := descendingByVersion(applied)
 
 	// Roll back up to n migrations
-	count := 0
 	for _, rec := range appliedList {
 		if count >= n {
 			break
@@ -182,13 +184,13 @@ func (r *Runner) Down(ctx context.Context, n int) error {
 				continue
 			}
 			if _, err := tx.ExecContext(ctx, stmt); err != nil {
-				tx.Rollback()
+				_ = tx.Rollback()
 				return fmt.Errorf("rollback of migration %d failed: %w", rec.Version, err)
 			}
 		}
 
 		if err := removeApplied(ctx, tx, rec.Version); err != nil {
-			tx.Rollback()
+			_ = tx.Rollback()
 			return err
 		}
 
@@ -207,7 +209,11 @@ func (r *Runner) Down(ctx context.Context, n int) error {
 }
 
 // Status returns the status of all discovered migrations.
-func (r *Runner) Status(ctx context.Context) ([]StatusEntry, error) {
+func (r *Runner) Status(ctx context.Context) (_ []StatusEntry, err error) {
+	start := time.Now()
+	count := 0
+	defer func() { record("status", start, count, err) }()
+
 	if err := ensureVersionTable(ctx, r.DB); err != nil {
 		return nil, fmt.Errorf("failed to initialize migrations table: %w", err)
 	}
@@ -240,6 +246,9 @@ func (r *Runner) Status(ctx context.Context) ([]StatusEntry, error) {
 		entries[i] = entry
 	}
 
+	// Status moves nothing, so the recorded count is what it inspected. That is
+	// the number a reader of the diagnostic wants from a status call.
+	count = len(entries)
 	return entries, nil
 }
 
@@ -260,11 +269,11 @@ func (r *Runner) acquireLock(ctx context.Context) error {
 	// Try to insert the lock sentinel row
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO breeze_migrations (version, name, checksum, applied_at)
-		VALUES (-1, 'lock', 'lock', ?)
-	`, time.Now().UTC())
+		VALUES (?, 'lock', 'lock', ?)
+	`, lockVersion, time.Now().UTC())
 
 	if err != nil {
-		tx.Rollback()
+		_ = tx.Rollback()
 		// If the insert fails (constraint violation), another runner holds the lock
 		// This is not perfect (we don't know the actual error reason), but it's the
 		// best we can do portably across SQL drivers.
@@ -278,7 +287,7 @@ func (r *Runner) acquireLock(ctx context.Context) error {
 
 // releaseLock releases the migration lock by deleting the sentinel row.
 func (r *Runner) releaseLock(ctx context.Context) error {
-	_, err := r.DB.ExecContext(ctx, `DELETE FROM breeze_migrations WHERE version = -1`)
+	_, err := r.DB.ExecContext(ctx, `DELETE FROM breeze_migrations WHERE version = ?`, lockVersion)
 	if err != nil {
 		// Log but don't fail; we're already done with the migration and a
 		// stuck sentinel row only blocks the *next* run, not this one.

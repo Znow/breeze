@@ -18,10 +18,10 @@ import (
 	"runtime"
 	"time"
 
-	breeze "github.com/nelthaarion/breeze"
-	"github.com/nelthaarion/breeze/dashboard"
-	"github.com/nelthaarion/breeze/events"
-	"github.com/nelthaarion/breeze/video"
+	breeze "github.com/nelthaarion/breeze/v2"
+	"github.com/nelthaarion/breeze/v2/dashboard"
+	"github.com/nelthaarion/breeze/v2/events"
+	"github.com/nelthaarion/breeze/v2/video"
 )
 
 // chunkSize is deliberately small so the demo shows several writes per
@@ -85,12 +85,11 @@ func main() {
 		return nil
 	})
 
-	router.Handle(breeze.GET, "/", func(ctx *breeze.Context) {
+	router.Handle(breeze.GET, "/", func(ctx *breeze.Context) error {
 		names, err := listVideos(root)
 		if err != nil {
 			ctx.Status(500)
-			ctx.WriteString("cannot read media directory")
-			return
+			return ctx.WriteString("cannot read media directory")
 		}
 
 		clips := make([]clip, 0, len(names))
@@ -110,6 +109,8 @@ func main() {
 			"ChunkSize": fmt.Sprintf("%d KiB", chunkSize>>10),
 			"Signed":    signed,
 		})
+
+		return nil
 	})
 
 	fmt.Println("video-example listening on http://localhost:3000")

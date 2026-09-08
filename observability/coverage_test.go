@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nelthaarion/breeze/events"
+	"github.com/nelthaarion/breeze/v2/events"
 )
 
 // This file covers the paths the main suite leaves open: the remaining
@@ -285,7 +285,7 @@ func TestAsyncListenerPublishesOrphanSignal(t *testing.T) {
 		return nil
 	}).Named("slow-async")
 
-	events.EmitAsyncBus(bus, UserCreated{})
+	_ = events.EmitAsyncBus(bus, UserCreated{})
 	wg.Wait()
 
 	// The dispatch signal plus the listener's own orphan signal.
@@ -331,7 +331,7 @@ func TestAsyncOrphanRecordsFailure(t *testing.T) {
 		return errors.New("async boom")
 	}).Named("failing-async")
 
-	events.EmitAsyncBus(bus, UserCreated{})
+	_ = events.EmitAsyncBus(bus, UserCreated{})
 	wg.Wait()
 
 	found := false
