@@ -40,6 +40,7 @@ jobs:
         # step is the only thing that does.
         working-directory: fleet/transport/eventtransport/backends/kafka
         run: |
+          go mod download
           go build ./...
           go vet ./...
 
