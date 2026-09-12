@@ -2,6 +2,8 @@ package rpc
 
 import (
 	"fmt"
+	"net"
+	"strconv"
 	"sync/atomic"
 
 	"github.com/panjf2000/gnet/v2"
@@ -63,6 +65,10 @@ type Server struct {
 	blockingCount atomic.Int64
 
 	maxMessageBytes int
+
+	listenPort     atomic.Int64
+	listenHost     atomic.Pointer[string]
+	maxRequestBody atomic.Int64
 }
 
 // Pool is the subset of breeze.WorkerPool this package needs.
@@ -156,6 +162,17 @@ func (s *Server) RefreshBlocking() {
 // The shape mirrors Breeze.OnTraffic: take the bytes, prepend anything left over
 // from the previous event, frame out as many complete messages as are present,
 // and stash the remainder in the connection's own context.
+func (s *Server) requestLimit() int {
+	limit := s.maxMessageBytes
+	if n := s.maxRequestBody.Load(); n > 0 && (limit <= 0 || n < int64(limit)) {
+		if n > int64(^uint(0)>>1) {
+			return limit
+		}
+		limit = int(n)
+	}
+	return limit
+}
+
 func (s *Server) OnTraffic(c gnet.Conn) gnet.Action {
 	data, _ := c.Next(-1)
 	if len(data) == 0 {
@@ -216,6 +233,12 @@ func (s *Server) OnTraffic(c gnet.Conn) gnet.Action {
 		consumed += end
 		scan.reset()
 
+		if limit := s.requestLimit(); limit > 0 && len(msg) > limit {
+			out = appendErrorResponse(out, NewError(CodeInvalidRequest, "request too large"), nullID)
+			action = gnet.Close
+			break
+		}
+
 		if s.blockingCount.Load() != 0 && s.messageNeedsWorker(msg) {
 			// Hand this message to a worker. Its bytes may be a view into
 			// gnet's buffer, which is invalid the moment OnTraffic returns, so
@@ -272,11 +295,11 @@ func (s *Server) saveRemainder(
 		return gnet.None
 	}
 
-	if len(rest) > s.maxMessageBytes {
+	if limit := s.requestLimit(); limit > 0 && len(rest) > limit {
 		// One message has grown past the cap without completing. There is no
 		// way to skip past it — the framer cannot know where it ends — so the
 		// connection goes.
-		fmt.Printf("[Breeze][RPC] message exceeds %d bytes, closing connection\n", s.maxMessageBytes)
+		fmt.Printf("[Breeze][RPC] message exceeds configured limit, closing connection\n")
 		c.SetContext(nil)
 		_, _ = c.Write(appendErrorResponse(nil, NewError(CodeInvalidRequest, "request too large"), nullID))
 		return gnet.Close
@@ -363,15 +386,54 @@ func (s *Server) OnClose(c gnet.Conn, err error) gnet.Action {
 // request-response protocol must not wait for Nagle, and round-robin load
 // balancing.
 func (s *Server) Run(port int, multiCore bool) error {
+	return s.RunOn("", port, multiCore)
+}
+
+// RunOn starts the JSON-RPC server on host:port. An empty host preserves the
+// historical behavior of listening on all interfaces.
+func (s *Server) RunOn(host string, port int, multiCore bool) error {
+	s.listenPort.Store(int64(port))
+	h := host
+	s.listenHost.Store(&h)
 	return gnet.Run(
 		s,
-		fmt.Sprintf("tcp://:%d", port),
+		"tcp://"+net.JoinHostPort(host, strconv.Itoa(port)),
 		gnet.WithTCPNoDelay(gnet.TCPNoDelay),
 		gnet.WithMulticore(multiCore),
 		gnet.WithLoadBalancing(gnet.RoundRobin),
 		gnet.WithReadBufferCap(64<<10),
 		gnet.WithWriteBufferCap(64<<10),
 	)
+}
+
+// ListenPort reports the port passed to Run or RunOn, or 0 before startup.
+func (s *Server) ListenPort() int {
+	return int(s.listenPort.Load())
+}
+
+// ListenHost reports the host passed to RunOn. An empty value means all
+// interfaces; before startup it returns an empty string.
+func (s *Server) ListenHost() string {
+	if h := s.listenHost.Load(); h != nil {
+		return *h
+	}
+	return ""
+}
+
+// SetMaxRequestBody sets the maximum JSON-RPC message/body size in bytes.
+// Zero disables this additional limit. Existing JSON-RPC framing limits remain
+// unchanged.
+func (s *Server) SetMaxRequestBody(n int64) {
+	if n < 0 {
+		n = 0
+	}
+	s.maxRequestBody.Store(n)
+}
+
+// MaxRequestBody reports the configured JSON-RPC request-body limit in bytes.
+// Zero means this additional limit is disabled.
+func (s *Server) MaxRequestBody() int64 {
+	return s.maxRequestBody.Load()
 }
 
 // RunAddr starts the server on an explicit gnet address, for callers that need

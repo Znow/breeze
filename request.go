@@ -2,11 +2,24 @@ package breeze
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"net/url"
 	"strconv"
 	"unsafe"
 )
+
+// ErrBodyTooLarge reports a request whose body exceeds the server's configured
+// cap (SetMaxRequestBody).
+//
+// It is a sentinel rather than a plain error so OnTraffic can distinguish it
+// from a malformed request and answer 413 instead of 400: the two have
+// different meanings to a caller — one says "send less", the other says "send
+// it correctly" — and both reach the same parse call site.
+//
+// Not returned by the exported ParseHTTPRequest, which has no server to read a
+// cap from; see that function's doc.
+var ErrBodyTooLarge = errors.New("request body exceeds the configured maximum")
 
 // crlfcrlf is the header terminator we scan for once per request.
 var crlfcrlf = []byte("\r\n\r\n")
@@ -20,9 +33,14 @@ var crlfcrlf = []byte("\r\n\r\n")
 //
 // A nil request with a nil error means the bytes are an incomplete request and
 // the caller should wait for more data.
+//
+// Parsing is uncapped: the exported form has no server to read a limit from,
+// so a Content-Length of any size is accepted here. The server enforces
+// SetMaxRequestBody before this function's callers do anything with the body
+// (see parsePooledRequest and fillHTTPRequest).
 func ParseHTTPRequest(data []byte) (*HTTPRequest, int, error) {
 	req := &HTTPRequest{Header: make(map[string]string, 8)}
-	consumed, err := fillHTTPRequest(req, data, true)
+	consumed, err := fillHTTPRequest(req, data, true, 0)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -38,9 +56,19 @@ func ParseHTTPRequest(data []byte) (*HTTPRequest, int, error) {
 //
 // ownHeaders selects whether the header block is copied into req.owned or
 // parsed in place. See fillHTTPRequest.
-func parsePooledRequest(data []byte, ownHeaders bool) (*HTTPRequest, int, error) {
+//
+// maxBody is the server's request-body cap, from SetMaxRequestBody. Zero means
+// unlimited. A Content-Length above it fails the parse before the body is
+// awaited or sliced, so the caller can answer 413 without ever holding the
+// bytes — which is the whole point of capping in the parser rather than in a
+// handler or middleware, both of which run after the body has arrived.
+func parsePooledRequest(data []byte, ownHeaders bool, maxBodies ...int64) (*HTTPRequest, int, error) {
+	maxBody := int64(0)
+	if len(maxBodies) > 0 {
+		maxBody = maxBodies[0]
+	}
 	req := acquireRequest()
-	consumed, err := fillHTTPRequest(req, data, ownHeaders)
+	consumed, err := fillHTTPRequest(req, data, ownHeaders, maxBody)
 	if err != nil || consumed == 0 {
 		releaseRequest(req)
 		return nil, 0, err
@@ -55,12 +83,17 @@ func parsePooledRequest(data []byte, ownHeaders bool) (*HTTPRequest, int, error)
 // and pay for isolation only for the requests that actually need it. Only
 // blocking routes are promoted, and a blocking route is about to do disk or
 // network I/O, so a second pass over a few hundred bytes still in L1 is noise
-// against what follows it.
+// against what follows.
 //
 // The re-parse cannot disagree with the first one. It reads the same bytes with
 // the same code, and the only mutation involved — lowercasing header keys — is
 // idempotent. So the caller keeps its own consumed count, and an error here
 // would mean the first parse was wrong too.
+//
+// maxBody is the same cap the first parse ran under. The check is idempotent —
+// the first parse already rejected an oversized Content-Length — but running
+// it again is free and keeps the two passes from drifting apart if someone
+// ever adds a second accumulation call site.
 //
 // # Why Header has to be cleared rather than overwritten
 //
@@ -70,16 +103,27 @@ func parsePooledRequest(data []byte, ownHeaders bool) (*HTTPRequest, int, error)
 // pointers into the caller's buffer — in the map, which is precisely what this
 // function exists to get rid of. clear() drops them; the buckets survive, so
 // the re-parse still allocates nothing but the owned copy.
-func promoteRequest(req *HTTPRequest, data []byte) error {
+func promoteRequest(req *HTTPRequest, data []byte, maxBodies ...int64) error {
+	maxBody := int64(0)
+	if len(maxBodies) > 0 {
+		maxBody = maxBodies[0]
+	}
 	clear(req.Header)
 	req.Query = nil
 	req.Body = nil
-	_, err := fillHTTPRequest(req, data, true)
+	_, err := fillHTTPRequest(req, data, true, maxBody)
 	return err
 }
 
 // fillHTTPRequest parses data into req, returning how many bytes the request
 // occupies. A zero length with a nil error means "incomplete, need more bytes".
+//
+// maxBody is the request-body cap from SetMaxRequestBody: 0 means unlimited,
+// and a request declaring or carrying more than it fails the parse with
+// ErrBodyTooLarge before any body byte is awaited, sliced or accumulated. The
+// check lives here — where Content-Length is first known — rather than in a
+// middleware, because middleware runs after the body has already arrived and
+// the memory has already been spent.
 //
 // # ownHeaders: who owns the bytes the strings point into
 //
@@ -127,7 +171,7 @@ func promoteRequest(req *HTTPRequest, data []byte) error {
 //     allocates nothing at all.
 //   - url.ParseQuery copies internally → b2s(query) is transient and safe.
 //   - internMethod returns a package-level constant for the seven known methods.
-func fillHTTPRequest(req *HTTPRequest, data []byte, ownHeaders bool) (int, error) {
+func fillHTTPRequest(req *HTTPRequest, data []byte, ownHeaders bool, maxBody int64) (int, error) {
 	// ── Find header boundary ───────────────────────────────────────────────
 	headerEnd := bytes.Index(data, crlfcrlf)
 	if headerEnd < 0 {
@@ -213,6 +257,15 @@ func fillHTTPRequest(req *HTTPRequest, data []byte, ownHeaders bool) (int, error
 	}
 
 	// ── Body (zero-copy) ───────────────────────────────────────────────────
+	// The cap is checked here, at the first moment the size of the body is
+	// known, and before the "wait for the rest of the body" branch below — so
+	// an oversized request is rejected without the connection ever holding its
+	// bytes. A 0 maxBody skips the branch entirely, which is the default and
+	// today's behaviour.
+	if maxBody > 0 && int64(contentLength) > maxBody {
+		return 0, ErrBodyTooLarge
+	}
+
 	consumed := headerEnd + 4
 	if contentLength > 0 {
 		total := consumed + contentLength

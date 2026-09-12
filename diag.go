@@ -45,6 +45,7 @@ const (
 	diagWebSocket = "websocket"
 	diagAutoMCP   = "auto-mcp"
 	diagStatic    = "static"
+	diagServer    = "server"
 )
 
 // staticCounter counts what ServeStatic served.
@@ -70,6 +71,7 @@ func (s *Breeze) registerCoreDiagnostics() {
 	diag.Register(diagAutoMCP, s.autoMCPProbe)
 	diag.Register(diagWebSocket, s.webSocketProbe)
 	diag.Register(diagStatic, s.staticProbe)
+	diag.Register(diagServer, s.serverProbe)
 }
 
 // staticProbe reports the static-file mounts.
@@ -85,6 +87,19 @@ func (s *Breeze) registerCoreDiagnostics() {
 // a single local stat of a directory, cannot block on anything remote, and is the
 // entire content of the answer. A missing root is by far the most common cause of
 // a static mount serving nothing.
+func (s *Breeze) serverProbe() diag.Report {
+	if s == nil {
+		return diag.Off("no Breeze server is registered")
+	}
+	detail := map[string]any{
+		"listen_host":      s.ListenHost(),
+		"listen_port":      s.ListenPort(),
+		"max_request_body": s.MaxRequestBody(),
+	}
+	return diag.OK(fmt.Sprintf("listener %s:%d; max request body %d bytes",
+		s.ListenHost(), s.ListenPort(), s.MaxRequestBody()), detail)
+}
+
 func (s *Breeze) staticProbe() diag.Report {
 	if s == nil || s.Router == nil {
 		return diag.Off("no router is registered, so nothing is serving static files")
