@@ -5,7 +5,7 @@ import (
 	"runtime/debug"
 
 	json "github.com/goccy/go-json"
-	"github.com/panjf2000/gnet/v2"
+	"github.com/nelthaarion/gnet/v2"
 )
 
 // dispatch.go — turning one framed JSON value into zero or more responses.

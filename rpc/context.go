@@ -4,7 +4,7 @@ import (
 	"sync"
 
 	json "github.com/goccy/go-json"
-	"github.com/panjf2000/gnet/v2"
+	"github.com/nelthaarion/gnet/v2"
 )
 
 // Context carries one call through its middleware chain and collects the reply.

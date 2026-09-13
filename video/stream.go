@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/panjf2000/gnet/v2"
+	"github.com/nelthaarion/gnet/v2"
 )
 
 // sink is where a response's bytes go.

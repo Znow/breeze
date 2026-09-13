@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	json "github.com/goccy/go-json"
-	"github.com/panjf2000/gnet/v2"
+	"github.com/nelthaarion/gnet/v2"
 )
 
 // frame_test.go — the framer and the event-loop path.

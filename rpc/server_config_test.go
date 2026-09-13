@@ -3,7 +3,7 @@ package rpc
 import (
 	"testing"
 
-	"github.com/panjf2000/gnet/v2"
+	"github.com/nelthaarion/gnet/v2"
 )
 
 func TestServerListenerConfiguration(t *testing.T) {

@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 
 	"github.com/nelthaarion/breeze/v2/diag"
-	"github.com/panjf2000/gnet/v2"
+	"github.com/nelthaarion/gnet/v2"
 )
 
 // ─── Per-connection WebSocket state ──────────────────────────────────────────

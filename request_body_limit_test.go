@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/panjf2000/gnet/v2"
+	"github.com/nelthaarion/gnet/v2"
 )
 
 type bodyLimitConn struct {
