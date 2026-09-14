@@ -63,7 +63,7 @@ import (
 	"time"
 	"unsafe"
 
-	gnet "github.com/panjf2000/gnet/v2"
+	gnet "github.com/nelthaarion/gnet/v2"
 )
 
 // ── Sentinel errors ────────────────────────────────────────────────────────

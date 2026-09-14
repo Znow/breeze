@@ -1,11 +1,14 @@
 package breeze
 
 import (
+	"errors"
 	"fmt"
+	"net"
 	"runtime/debug"
+	"strconv"
 	"sync/atomic"
 
-	"github.com/panjf2000/gnet/v2"
+	"github.com/nelthaarion/gnet/v2"
 )
 
 type Breeze struct {
@@ -17,6 +20,14 @@ type Breeze struct {
 	// application but not its bootstrap can learn the address it is answering
 	// on. See ListenPort.
 	listenPort atomic.Int64
+
+	// listenHost is the host passed to RunOn. An empty value preserves the
+	// historical all-interface listener.
+	listenHost atomic.Pointer[string]
+
+	// maxRequestBody is the HTTP request-body limit. Zero preserves the
+	// historical unlimited behavior.
+	maxRequestBody atomic.Int64
 
 	// inlineExec runs non-blocking routes directly on the gnet event-loop
 	// goroutine instead of dispatching them to the worker pool. See
@@ -62,6 +73,7 @@ const compactThreshold = 512
 // these shared slices is safe: gnet never retains or mutates them.
 var (
 	resp400 = []byte("HTTP/1.1 400 Bad Request\r\nContent-Length: 11\r\n\r\nBad Request")
+	resp413 = []byte("HTTP/1.1 413 Request Entity Too Large\r\nContent-Length: 24\r\n\r\nRequest Entity Too Large")
 	resp404 = []byte("HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\n\r\nNot Found")
 	resp500 = []byte("HTTP/1.1 500 Internal Server Error\r\nContent-Length: 21\r\n\r\nInternal Server Error")
 )
@@ -264,10 +276,16 @@ func (s *Breeze) OnTraffic(c gnet.Conn) gnet.Action {
 	//     them survive the handoff to a worker with nothing to promote.
 	zeroCopy := s.zeroCopyHeaders && (s.inlineExec || goOwned)
 
+	closeConn := false
 	for len(buf) > 0 {
-		req, consumed, err := parsePooledRequest(buf, !zeroCopy)
+		req, consumed, err := parsePooledRequest(buf, !zeroCopy, s.MaxRequestBody())
 		if err != nil {
-			_, _ = c.Write(resp400)
+			if errors.Is(err, ErrBodyTooLarge) {
+				_, _ = c.Write(resp413)
+				closeConn = true
+			} else {
+				_, _ = c.Write(resp400)
+			}
 			buf = nil
 			break
 		}
@@ -304,7 +322,7 @@ func (s *Breeze) OnTraffic(c gnet.Conn) gnet.Action {
 				if params != nil {
 					releaseParams(params)
 				}
-				if err := promoteRequest(req, buf); err != nil {
+				if err := promoteRequest(req, buf, s.MaxRequestBody()); err != nil {
 					// Unreachable: the same bytes parsed once already.
 					releaseRequest(req)
 					_, _ = c.Write(resp400)
@@ -359,6 +377,9 @@ func (s *Breeze) OnTraffic(c gnet.Conn) gnet.Action {
 	// backing array and keeps the fast-path Load above allocation-free.
 	if len(buf) == 0 {
 		c.SetContext(nil)
+		if closeConn {
+			return gnet.Close
+		}
 		return gnet.None
 	}
 
@@ -502,37 +523,46 @@ func (s *Breeze) OnClose(c gnet.Conn, err error) gnet.Action {
 // rather than rebinding the port with the WebSocket registry and hub already
 // torn down.
 func (s *Breeze) Run(port int, multiCore bool) error {
+	return s.RunOn("", port, multiCore)
+}
+
+// RunOn starts Breeze on host:port. An empty host preserves the historical
+// behavior of listening on all interfaces.
+func (s *Breeze) RunOn(host string, port int, multiCore bool) error {
 	s.initShutdownState()
 	if s.stopping.Load() {
 		return ErrServerStopped
 	}
-	// Set before the bind so a Stop racing startup waits for OnBoot instead of
-	// concluding the server was never started. Cleared on no path: a *Breeze
-	// gets one Run.
 	s.runCalled.Store(true)
-	// Signals Stop that gnet.Run has returned, whether it returned because Stop
-	// asked it to, because the bind failed, or because gnet gave up. Stop waits
-	// on this rather than on Engine.Stop's own polling loop.
 	defer s.markRunExited()
 
-	// Recorded before the bind, so anything reading it during startup sees the
-	// port this call is for rather than zero. A failed bind leaves it set, which
-	// is harmless: Run returns the error and the process does not go on to serve.
 	s.listenPort.Store(int64(port))
+	h := host
+	s.listenHost.Store(&h)
 	return gnet.Run(
 		s,
-		fmt.Sprintf("tcp://:%d", port),
+		"tcp://"+net.JoinHostPort(host, strconv.Itoa(port)),
 		gnet.WithTCPNoDelay(gnet.TCPNoDelay),
 		gnet.WithMulticore(multiCore),
 		gnet.WithLoadBalancing(gnet.RoundRobin),
-		// One reusable read buffer per event loop, sized so a pipelined batch
-		// of small requests arrives in a single read. The default is 64 KiB;
-		// this is per loop, not per connection, so it is cheap.
 		gnet.WithReadBufferCap(64<<10),
-		// Cap how much unflushed response data gnet stacks in a connection's
-		// ring buffer before spilling to its linked-list buffer.
 		gnet.WithWriteBufferCap(64<<10),
 	)
+}
+
+// SetMaxRequestBody sets the maximum HTTP request-body size in bytes.
+// A value of 0 disables the limit. The default is 0.
+func (s *Breeze) SetMaxRequestBody(n int64) {
+	if n < 0 {
+		n = 0
+	}
+	s.maxRequestBody.Store(n)
+}
+
+// MaxRequestBody reports the configured HTTP request-body limit in bytes.
+// Zero means unlimited.
+func (s *Breeze) MaxRequestBody() int64 {
+	return s.maxRequestBody.Load()
 }
 
 // ListenPort reports the port passed to Run, or 0 before Run is called.
@@ -549,4 +579,13 @@ func (s *Breeze) Run(port int, multiCore bool) error {
 // event-loop or worker goroutines.
 func (s *Breeze) ListenPort() int {
 	return int(s.listenPort.Load())
+}
+
+// ListenHost reports the host passed to RunOn. An empty value means all
+// interfaces; before Run or RunOn it returns an empty string.
+func (s *Breeze) ListenHost() string {
+	if h := s.listenHost.Load(); h != nil {
+		return *h
+	}
+	return ""
 }

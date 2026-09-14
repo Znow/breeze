@@ -142,6 +142,7 @@ func TestNoProbeIsRegisteredUnderAnUnknownName(t *testing.T) {
 		"workerpool": true, // always present
 		"auto-mcp":   true, // app.EnableMCP, not `breeze add`
 		"locale":     true, // the middleware; "i18n" is the bundle
+		"server":     true, // core Breeze listener config; registered by New
 	}
 
 	for _, name := range diag.Registered() {
