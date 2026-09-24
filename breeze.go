@@ -29,6 +29,12 @@ type Breeze struct {
 	// historical unlimited behavior.
 	maxRequestBody atomic.Int64
 
+	// maxHeaderBytes caps the HTTP header block. Unlike maxRequestBody it
+	// defaults to defaultMaxHeaderBytes rather than 0: an unbounded header is a
+	// memory-exhaustion vector (a client can stream header bytes forever without
+	// a terminator), so the safe default ships on. Zero disables the cap.
+	maxHeaderBytes atomic.Int64
+
 	// inlineExec runs non-blocking routes directly on the gnet event-loop
 	// goroutine instead of dispatching them to the worker pool. See
 	// SetInlineExecution for the reasoning and the trade-off.
@@ -65,6 +71,12 @@ type Breeze struct {
 // exceeds this many bytes, to avoid keeping large receive buffers alive.
 const compactThreshold = 512
 
+// defaultMaxHeaderBytes is the header-block cap applied to a new server. It
+// matches net/http's DefaultMaxHeaderBytes (1 MiB) — generous for any real
+// client, small enough that a flood of unterminated headers cannot exhaust
+// memory. Override with SetMaxHeaderBytes, or SetMaxHeaderBytes(0) to disable.
+const defaultMaxHeaderBytes = 1 << 20
+
 // Precomputed error responses. Writing one costs a single append-free
 // Conn.Write of a package-level slice — no formatting, no allocation.
 //
@@ -74,6 +86,7 @@ const compactThreshold = 512
 var (
 	resp400 = []byte("HTTP/1.1 400 Bad Request\r\nContent-Length: 11\r\n\r\nBad Request")
 	resp413 = []byte("HTTP/1.1 413 Request Entity Too Large\r\nContent-Length: 24\r\n\r\nRequest Entity Too Large")
+	resp431 = []byte("HTTP/1.1 431 Request Header Fields Too Large\r\nContent-Length: 31\r\n\r\nRequest Header Fields Too Large")
 	resp404 = []byte("HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\n\r\nNot Found")
 	resp500 = []byte("HTTP/1.1 500 Internal Server Error\r\nContent-Length: 21\r\n\r\nInternal Server Error")
 )
@@ -95,6 +108,7 @@ func New(router *Router, pool *WorkerPool) *Breeze {
 		Pool:               pool,
 		inlineExec:         true,
 	}
+	s.maxHeaderBytes.Store(defaultMaxHeaderBytes)
 	// Publish the router, pool, Auto-MCP and WebSocket probes. Four registry
 	// appends, once, at construction; see diag.go.
 	s.registerCoreDiagnostics()
@@ -278,12 +292,16 @@ func (s *Breeze) OnTraffic(c gnet.Conn) gnet.Action {
 
 	closeConn := false
 	for len(buf) > 0 {
-		req, consumed, err := parsePooledRequest(buf, !zeroCopy, s.MaxRequestBody())
+		req, consumed, err := parsePooledRequest(buf, !zeroCopy, s.MaxRequestBody(), s.MaxHeaderBytes())
 		if err != nil {
-			if errors.Is(err, ErrBodyTooLarge) {
+			switch {
+			case errors.Is(err, ErrBodyTooLarge):
 				_, _ = c.Write(resp413)
 				closeConn = true
-			} else {
+			case errors.Is(err, ErrHeaderTooLarge):
+				_, _ = c.Write(resp431)
+				closeConn = true
+			default:
 				_, _ = c.Write(resp400)
 			}
 			buf = nil
@@ -322,7 +340,7 @@ func (s *Breeze) OnTraffic(c gnet.Conn) gnet.Action {
 				if params != nil {
 					releaseParams(params)
 				}
-				if err := promoteRequest(req, buf, s.MaxRequestBody()); err != nil {
+				if err := promoteRequest(req, buf, s.MaxRequestBody(), s.MaxHeaderBytes()); err != nil {
 					// Unreachable: the same bytes parsed once already.
 					releaseRequest(req)
 					_, _ = c.Write(resp400)
@@ -563,6 +581,25 @@ func (s *Breeze) SetMaxRequestBody(n int64) {
 // Zero means unlimited.
 func (s *Breeze) MaxRequestBody() int64 {
 	return s.maxRequestBody.Load()
+}
+
+// SetMaxHeaderBytes sets the maximum size of the HTTP header block in bytes.
+// The default is defaultMaxHeaderBytes (1 MiB). A value of 0 disables the
+// limit, which restores the historical unbounded behavior and is not
+// recommended: a client that never sends the header terminator would then make
+// the server buffer its bytes without bound. A request whose headers exceed the
+// limit is answered with 431 and the connection is closed.
+func (s *Breeze) SetMaxHeaderBytes(n int64) {
+	if n < 0 {
+		n = 0
+	}
+	s.maxHeaderBytes.Store(n)
+}
+
+// MaxHeaderBytes reports the configured HTTP header-block limit in bytes.
+// Zero means unlimited.
+func (s *Breeze) MaxHeaderBytes() int64 {
+	return s.maxHeaderBytes.Load()
 }
 
 // ListenPort reports the port passed to Run, or 0 before Run is called.

@@ -21,6 +21,20 @@ import (
 // cap from; see that function's doc.
 var ErrBodyTooLarge = errors.New("request body exceeds the configured maximum")
 
+// ErrHeaderTooLarge reports a request whose header block exceeds the server's
+// configured cap (SetMaxHeaderBytes).
+//
+// Like ErrBodyTooLarge it is a sentinel so OnTraffic can answer a distinct
+// status — 431 Request Header Fields Too Large — rather than a generic 400.
+// It is returned both when a complete header block is oversized and when a
+// client streams header bytes past the cap without ever sending the CRLFCRLF
+// terminator, which is the case that would otherwise let a single connection
+// grow the leftover buffer without bound.
+//
+// Not returned by the exported ParseHTTPRequest, which has no server to read a
+// cap from; see that function's doc.
+var ErrHeaderTooLarge = errors.New("request headers exceed the configured maximum")
+
 // crlfcrlf is the header terminator we scan for once per request.
 var crlfcrlf = []byte("\r\n\r\n")
 
@@ -40,7 +54,7 @@ var crlfcrlf = []byte("\r\n\r\n")
 // (see parsePooledRequest and fillHTTPRequest).
 func ParseHTTPRequest(data []byte) (*HTTPRequest, int, error) {
 	req := &HTTPRequest{Header: make(map[string]string, 8)}
-	consumed, err := fillHTTPRequest(req, data, true, 0)
+	consumed, err := fillHTTPRequest(req, data, true, 0, 0)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -62,13 +76,10 @@ func ParseHTTPRequest(data []byte) (*HTTPRequest, int, error) {
 // awaited or sliced, so the caller can answer 413 without ever holding the
 // bytes — which is the whole point of capping in the parser rather than in a
 // handler or middleware, both of which run after the body has arrived.
-func parsePooledRequest(data []byte, ownHeaders bool, maxBodies ...int64) (*HTTPRequest, int, error) {
-	maxBody := int64(0)
-	if len(maxBodies) > 0 {
-		maxBody = maxBodies[0]
-	}
+func parsePooledRequest(data []byte, ownHeaders bool, limits ...int64) (*HTTPRequest, int, error) {
+	maxBody, maxHeader := splitLimits(limits)
 	req := acquireRequest()
-	consumed, err := fillHTTPRequest(req, data, ownHeaders, maxBody)
+	consumed, err := fillHTTPRequest(req, data, ownHeaders, maxBody, maxHeader)
 	if err != nil || consumed == 0 {
 		releaseRequest(req)
 		return nil, 0, err
@@ -103,16 +114,26 @@ func parsePooledRequest(data []byte, ownHeaders bool, maxBodies ...int64) (*HTTP
 // pointers into the caller's buffer — in the map, which is precisely what this
 // function exists to get rid of. clear() drops them; the buckets survive, so
 // the re-parse still allocates nothing but the owned copy.
-func promoteRequest(req *HTTPRequest, data []byte, maxBodies ...int64) error {
-	maxBody := int64(0)
-	if len(maxBodies) > 0 {
-		maxBody = maxBodies[0]
-	}
+func promoteRequest(req *HTTPRequest, data []byte, limits ...int64) error {
+	maxBody, maxHeader := splitLimits(limits)
 	clear(req.Header)
 	req.Query = nil
 	req.Body = nil
-	_, err := fillHTTPRequest(req, data, true, maxBody)
+	_, err := fillHTTPRequest(req, data, true, maxBody, maxHeader)
 	return err
+}
+
+// splitLimits reads the optional (maxBody, maxHeader) pair the pooled parse
+// entry points accept as a variadic tail. Both default to 0 (unlimited), which
+// is what the exported, uncapped parser and the pre-cap call sites pass.
+func splitLimits(limits []int64) (maxBody, maxHeader int64) {
+	if len(limits) > 0 {
+		maxBody = limits[0]
+	}
+	if len(limits) > 1 {
+		maxHeader = limits[1]
+	}
+	return maxBody, maxHeader
 }
 
 // fillHTTPRequest parses data into req, returning how many bytes the request
@@ -171,11 +192,26 @@ func promoteRequest(req *HTTPRequest, data []byte, maxBodies ...int64) error {
 //     allocates nothing at all.
 //   - url.ParseQuery copies internally → b2s(query) is transient and safe.
 //   - internMethod returns a package-level constant for the seven known methods.
-func fillHTTPRequest(req *HTTPRequest, data []byte, ownHeaders bool, maxBody int64) (int, error) {
+func fillHTTPRequest(req *HTTPRequest, data []byte, ownHeaders bool, maxBody, maxHeader int64) (int, error) {
 	// ── Find header boundary ───────────────────────────────────────────────
 	headerEnd := bytes.Index(data, crlfcrlf)
 	if headerEnd < 0 {
+		// No terminator yet. Normally we wait for more bytes — but a client
+		// that never sends CRLFCRLF would otherwise make the caller buffer its
+		// header bytes without bound (one connection can drive the process out
+		// of memory). Reject once what we have already exceeds the cap. The
+		// check is on len(data) because that is exactly the run of unterminated
+		// header bytes the connection is holding.
+		if maxHeader > 0 && int64(len(data)) > maxHeader {
+			return 0, ErrHeaderTooLarge
+		}
 		return 0, nil // incomplete — wait for more data
+	}
+
+	// A complete but oversized header block is rejected here, before the block
+	// is copied into req.owned or scanned into req.Header.
+	if maxHeader > 0 && int64(headerEnd) > maxHeader {
+		return 0, ErrHeaderTooLarge
 	}
 
 	// ── Establish the bytes all strings will view ──────────────────────────
