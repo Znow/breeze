@@ -6,7 +6,7 @@
       <h1>Breeze Dashboard</h1>
       <p>Sign in to continue</p>
     </div>
-    <form id="login-form" class="login-form" autocomplete="off">
+    <form id="login-form" class="login-form" method="post" action="{{.Data.LoginPath}}" data-spa="false" autocomplete="off">
       <div class="field">
         <label for="username">Username</label>
         <input id="username" name="username" type="text" placeholder="admin" required autofocus>
